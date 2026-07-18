@@ -95,9 +95,8 @@ insert into public.produtos (nome, descricao, preco, categoria, imagem) values
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = 'SUA_SUPABASE_URL_AQUI';
-const SUPABASE_ANON_KEY = 'SUA_SUPABASE_ANON_KEY_AQUI';
-
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || '';
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // 2. ESCUTAR STATUS DE FUNCIONAMENTO (FECHAR/ABRIR LOJA) EM TEMPO REAL
