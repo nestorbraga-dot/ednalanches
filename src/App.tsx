@@ -401,9 +401,9 @@ export default function App() {
                   showToast(`🍳 Edna está preparando o seu pedido ${completedOrder.code}!`, 'success');
                   if (soundEnabled) playOrderReadySound();
                 } else if (completedOrder.status === 'Pronto') {
-                  showToast(`🎉 Seu pedido ${completedOrder.code} está pronto e vindo à mesa!`, 'success');
+                  showToast(`🎉 Pedido ${completedOrder.code} pronto! Venha ao balcão retirá-lo.`, 'success');
                   if (soundEnabled) playOrderReadySound();
-                  triggerNotification(`Seu pedido ${completedOrder.code} está vindo!`, `O garçom já está levando seus lanches para a mesa ${completedOrder.table}.`);
+                  triggerNotification(`Seu pedido ${completedOrder.code} está pronto!`, `Por favor, venha ao balcão para retirar o seu pedido.`);
                 } else if (completedOrder.status === 'Entregue') {
                   showToast(`😋 Seu pedido ${completedOrder.code} foi entregue. Bom apetite!`, 'success');
                 }
@@ -618,15 +618,32 @@ export default function App() {
 
   // Update Order Status (Admin action)
   const handleUpdateStatus = async (orderId: string, newStatus: OrderStatus) => {
+    // 1. Optimistically update local UI state immediately
+    setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, status: newStatus } : o));
+
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('pedidos')
         .update({ status: newStatus })
-        .eq('id', orderId);
+        .eq('id', orderId)
+        .select();
+
       if (error) throw error;
+
+      // If data is empty, it means RLS policy blocked the update (or the row doesn't exist)
+      if (!data || data.length === 0) {
+        showToast('Erro: Bloqueado por política RLS. É necessário habilitar a política de UPDATE para pedidos no Supabase.', 'alert');
+        // Revert local state by fetching orders again
+        fetchOrders();
+        return;
+      }
+
       showToast(`Status atualizado para: ${newStatus}`, 'success');
-    } catch (e) {
-      showToast('Falha ao atualizar status.', 'alert');
+    } catch (e: any) {
+      console.error('Error updating status:', e);
+      showToast('Falha ao atualizar status no banco: ' + e.message, 'alert');
+      // Revert local state
+      fetchOrders();
     }
   };
 
@@ -1601,12 +1618,12 @@ export default function App() {
                           )}
                           {ord.status === 'Pronto' && (
                             <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl text-center">
-                              <p className="text-xs text-emerald-800 font-extrabold">🎉 Pronto! O garçom já está levando para a mesa {clientTable}!</p>
+                              <p className="text-xs text-emerald-800 font-extrabold">🎉 Pronto! Seu pedido está pronto. Venha ao balcão para retirar!</p>
                             </div>
                           )}
                           {ord.status === 'Entregue' && (
                             <p className="text-xs text-slate-500 bg-slate-100 p-2.5 rounded-xl">
-                              😋 Entregue! Bom apetite! Esperamos que goste.
+                              😋 Pedido retirado! Bom apetite! Esperamos que goste.
                             </p>
                           )}
 
