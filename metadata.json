@@ -1,0 +1,6 @@
+{
+  "name": "Edna Lanches",
+  "description": "Aplicativo de gerenciamento de pedidos e lanchonete Edna Lanches com painel administrativo em tempo real, som de apito na cozinha e integração técnica com Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
