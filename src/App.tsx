@@ -44,6 +44,7 @@ import SupabaseGuide from './components/SupabaseGuide';
 import ReactNativeCode from './components/ReactNativeCode';
 import { playKitchenWhistle, playOrderReadySound, playEasterEggSound } from './components/Buzzer';
 import { Product, Order, OrderItem, AuthState, OrderStatus } from './types';
+import { supabase } from './lib/supabase';
 
 export default function App() {
   // Global App View Mode: 'client' | 'admin'
@@ -168,7 +169,6 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 5000);
   };
-
   // Fetch initial data
   useEffect(() => {
     fetchProducts();
@@ -179,11 +179,13 @@ export default function App() {
 
   const fetchStoreStatus = async () => {
     try {
-      const res = await fetch('/api/store/status');
-      if (res.ok) {
-        const data = await res.json();
-        setIsStoreOpen(data.isOpen);
-      }
+      const { data, error } = await supabase
+        .from('loja_config')
+        .select('aberta')
+        .eq('id', 1)
+        .single();
+      if (error) throw error;
+      setIsStoreOpen(data?.aberta ?? true);
     } catch (e) {
       console.error('Error fetching store status:', e);
     }
@@ -191,11 +193,12 @@ export default function App() {
 
   const fetchCategories = async () => {
     try {
-      const res = await fetch('/api/categories');
-      if (res.ok) {
-        const data = await res.json();
-        setCategories(data);
-      }
+      const { data, error } = await supabase
+        .from('produtos')
+        .select('categoria');
+      if (error) throw error;
+      const distinct = Array.from(new Set((data || []).map((p: any) => p.categoria).filter(Boolean)));
+      setCategories(distinct as string[]);
     } catch (e) {
       console.error('Error fetching categories:', e);
     }
@@ -204,11 +207,20 @@ export default function App() {
   const fetchProducts = async () => {
     try {
       setLoadingProducts(true);
-      const res = await fetch('/api/products');
-      if (res.ok) {
-        const data = await res.json();
-        setProducts(data);
-      }
+      const { data, error } = await supabase
+        .from('produtos')
+        .select('*')
+        .order('nome', { ascending: true });
+      if (error) throw error;
+      const mapped = (data || []).map((p: any) => ({
+        id: p.id,
+        name: p.nome,
+        description: p.descricao || '',
+        price: Number(p.preco),
+        category: p.categoria,
+        image: p.imagem
+      }));
+      setProducts(mapped);
     } catch (e) {
       console.error('Error fetching products:', e);
     } finally {
@@ -219,11 +231,46 @@ export default function App() {
   const fetchOrders = async () => {
     try {
       setLoadingOrders(true);
-      const res = await fetch('/api/orders');
-      if (res.ok) {
-        const data = await res.json();
-        setOrders(data);
-      }
+      const { data: ordersData, error: ordersError } = await supabase
+        .from('pedidos')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (ordersError) throw ordersError;
+
+      const fullOrders = await Promise.all(
+        (ordersData || []).map(async (order: any) => {
+          const { data: itemsData, error: itemsError } = await supabase
+            .from('pedido_itens')
+            .select('quantidade, produtos(*)')
+            .eq('pedido_id', order.id);
+          if (itemsError) throw itemsError;
+
+          const processedItems = (itemsData || []).map((item: any) => ({
+            product: {
+              id: item.produtos.id,
+              name: item.produtos.nome,
+              description: item.produtos.descricao || '',
+              price: Number(item.produtos.preco),
+              category: item.produtos.categoria,
+              image: item.produtos.imagem
+            },
+            quantity: item.quantidade
+          }));
+
+          return {
+            id: order.id,
+            code: order.codigo,
+            table: order.mesa,
+            customerName: order.cliente_nome,
+            items: processedItems,
+            status: order.status,
+            totalPrice: Number(order.preco_total),
+            createdAt: order.created_at,
+            notes: order.observacoes || ''
+          };
+        })
+      );
+      setOrders(fullOrders);
     } catch (e) {
       console.error('Error fetching orders:', e);
     } finally {
@@ -231,84 +278,155 @@ export default function App() {
     }
   };
 
-  // Real-time Event Handling via SSE
+  // Real-time Event Handling via Supabase Realtime
   useEffect(() => {
-    const eventSource = new EventSource('/api/orders/stream');
-
-    eventSource.onmessage = (e) => {
-      try {
-        const event = JSON.parse(e.data);
-        console.log('Real-time event received:', event);
-
-        if (event.type === 'NEW_ORDER') {
-          // Add to orders list
-          const newOrder = event.data as Order;
-          setOrders((prev) => [newOrder, ...prev]);
-
-          // Trigger whistle if Admin is looking or if kitchen buzzer is active
-          if (soundEnabled) {
-            playKitchenWhistle();
-          }
-          
-          showToast(`🔔 Novo pedido recebido: ${newOrder.code} da Mesa ${newOrder.table}!`, 'info');
-        }
-
-        if (event.type === 'STATUS_UPDATED') {
-          const updatedOrder = event.data as Order;
-          setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
-
-          // Check if this belongs to the logged-in client
-          const savedClientName = localStorage.getItem('edna_client_name');
-          const savedClientTable = localStorage.getItem('edna_client_table');
-
-          if (
-            updatedOrder.customerName === savedClientName &&
-            updatedOrder.table === savedClientTable
-          ) {
-            // Trigger customized alert based on new status
-            if (updatedOrder.status === 'Em Preparo') {
-              showToast(`🍳 Edna está preparando o seu pedido ${updatedOrder.code}!`, 'success');
-              if (soundEnabled) playOrderReadySound();
-            } else if (updatedOrder.status === 'Pronto') {
-              showToast(`🎉 Seu pedido ${updatedOrder.code} está pronto e vindo à mesa!`, 'success');
-              if (soundEnabled) playOrderReadySound();
-              triggerNotification(`Seu pedido ${updatedOrder.code} está vindo!`, `O garçom já está levando seus lanches para a mesa ${updatedOrder.table}.`);
-            } else if (updatedOrder.status === 'Entregue') {
-              showToast(`😋 Seu pedido ${updatedOrder.code} foi entregue. Bom apetite!`, 'success');
-            }
-          }
-        }
-
-        if (event.type === 'ORDERS_RESET') {
-          setOrders(event.data);
-          showToast('Histórico de pedidos resetado para demonstração.', 'alert');
-        }
-
-        if (event.type === 'STORE_STATUS_UPDATED') {
-          setIsStoreOpen(event.data.isOpen);
+    // 1. Listen to loja_config updates
+    const configChannel = supabase
+      .channel('loja-config-changes')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'loja_config', filter: 'id=eq.1' },
+        (payload) => {
+          const isOpen = payload.new.aberta;
+          setIsStoreOpen(isOpen);
           showToast(
-            event.data.isOpen 
+            isOpen 
               ? '☀️ A Edna Lanches está aberta e recebendo novos pedidos!' 
               : '🌙 A Edna Lanches fechou temporariamente para novos pedidos.', 
             'info'
           );
         }
-      } catch (err) {
-        console.error('Error parsing SSE message:', err);
-      }
-    };
+      )
+      .subscribe();
 
-    eventSource.onerror = (err) => {
-      console.warn('SSE connection disconnected. Reconnecting...');
-    };
+    // 2. Listen to pedidos changes
+    const pedidosChannel = supabase
+      .channel('pedidos-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pedidos' },
+        async (payload) => {
+          console.log('Real-time event received on pedidos:', payload);
+          
+          if (payload.eventType === 'INSERT') {
+            const newOrder = payload.new;
+            try {
+              const { data: itemsData, error: itemsError } = await supabase
+                .from('pedido_itens')
+                .select('quantidade, produtos(*)')
+                .eq('pedido_id', newOrder.id);
+              if (itemsError) throw itemsError;
 
-    // Request Notification permission early
+              const processedItems = (itemsData || []).map((item: any) => ({
+                product: {
+                  id: item.produtos.id,
+                  name: item.produtos.nome,
+                  description: item.produtos.descricao || '',
+                  price: Number(item.produtos.preco),
+                  category: item.produtos.categoria,
+                  image: item.produtos.imagem
+                },
+                quantity: item.quantidade
+              }));
+
+              const completedOrder = {
+                id: newOrder.id,
+                code: newOrder.codigo,
+                table: newOrder.mesa,
+                customerName: newOrder.cliente_nome,
+                items: processedItems,
+                status: newOrder.status,
+                totalPrice: Number(newOrder.preco_total),
+                createdAt: newOrder.created_at,
+                notes: newOrder.observacoes || ''
+              };
+
+              setOrders((prev) => {
+                if (prev.some(o => o.id === completedOrder.id)) return prev;
+                return [completedOrder, ...prev];
+              });
+
+              if (soundEnabled) {
+                playKitchenWhistle();
+              }
+              showToast(`🔔 Novo pedido recebido: ${completedOrder.code} da Mesa ${completedOrder.table}!`, 'info');
+            } catch (err) {
+              console.error('Error handling new real-time order:', err);
+            }
+          }
+
+          if (payload.eventType === 'UPDATE') {
+            const updatedOrder = payload.new;
+            try {
+              const { data: itemsData, error: itemsError } = await supabase
+                .from('pedido_itens')
+                .select('quantidade, produtos(*)')
+                .eq('pedido_id', updatedOrder.id);
+              if (itemsError) throw itemsError;
+
+              const processedItems = (itemsData || []).map((item: any) => ({
+                product: {
+                  id: item.produtos.id,
+                  name: item.produtos.nome,
+                  description: item.produtos.descricao || '',
+                  price: Number(item.produtos.preco),
+                  category: item.produtos.categoria,
+                  image: item.produtos.imagem
+                },
+                quantity: item.quantidade
+              }));
+
+              const completedOrder = {
+                id: updatedOrder.id,
+                code: updatedOrder.codigo,
+                table: updatedOrder.mesa,
+                customerName: updatedOrder.cliente_nome,
+                items: processedItems,
+                status: updatedOrder.status,
+                totalPrice: Number(updatedOrder.preco_total),
+                createdAt: updatedOrder.created_at,
+                notes: updatedOrder.observacoes || ''
+              };
+
+              setOrders((prev) => prev.map((o) => (o.id === completedOrder.id ? completedOrder : o)));
+
+              const savedClientName = localStorage.getItem('edna_client_name');
+              const savedClientTable = localStorage.getItem('edna_client_table');
+
+              if (
+                completedOrder.customerName === savedClientName &&
+                completedOrder.table === savedClientTable
+              ) {
+                if (completedOrder.status === 'Em Preparo') {
+                  showToast(`🍳 Edna está preparando o seu pedido ${completedOrder.code}!`, 'success');
+                  if (soundEnabled) playOrderReadySound();
+                } else if (completedOrder.status === 'Pronto') {
+                  showToast(`🎉 Seu pedido ${completedOrder.code} está pronto e vindo à mesa!`, 'success');
+                  if (soundEnabled) playOrderReadySound();
+                  triggerNotification(`Seu pedido ${completedOrder.code} está vindo!`, `O garçom já está levando seus lanches para a mesa ${completedOrder.table}.`);
+                } else if (completedOrder.status === 'Entregue') {
+                  showToast(`😋 Seu pedido ${completedOrder.code} foi entregue. Bom apetite!`, 'success');
+                }
+              }
+            } catch (err) {
+              console.error('Error handling updated real-time order:', err);
+            }
+          }
+
+          if (payload.eventType === 'DELETE') {
+            setOrders((prev) => prev.filter(o => o.id !== payload.old.id));
+          }
+        }
+      )
+      .subscribe();
+
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
 
     return () => {
-      eventSource.close();
+      supabase.removeChannel(configChannel);
+      supabase.removeChannel(pedidosChannel);
     };
   }, [soundEnabled]);
 
@@ -321,7 +439,7 @@ export default function App() {
     }
   };
 
-  // Client Authentication: Login
+  // Client Authentication: Login (Offline / Local bypass)
   const handleClientLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientName.trim() || !clientTable.trim()) {
@@ -329,36 +447,21 @@ export default function App() {
       return;
     }
 
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: clientName, table: clientTable })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAuth({
-          token: data.token,
-          isAuthenticated: true,
-          role: 'client'
-        });
-        localStorage.setItem('edna_token', data.token);
-        localStorage.setItem('edna_role', 'client');
-        localStorage.setItem('edna_client_name', clientName);
-        localStorage.setItem('edna_client_table', clientTable);
-        setClientTab('cardapio');
-        showToast(`Bem-vindo(a) à mesa ${clientTable}, ${clientName}!`, 'success');
-      } else {
-        const err = await res.json();
-        showToast(err.error || 'Erro ao entrar', 'alert');
-      }
-    } catch (err) {
-      showToast('Erro de conectividade com o servidor', 'alert');
-    }
+    const mockToken = 'client-token-' + Date.now();
+    setAuth({
+      token: mockToken,
+      isAuthenticated: true,
+      role: 'client'
+    });
+    localStorage.setItem('edna_token', mockToken);
+    localStorage.setItem('edna_role', 'client');
+    localStorage.setItem('edna_client_name', clientName);
+    localStorage.setItem('edna_client_table', clientTable);
+    setClientTab('cardapio');
+    showToast(`Bem-vindo(a) à mesa ${clientTable}, ${clientName}!`, 'success');
   };
 
-  // Admin Authentication: Login
+  // Admin Authentication: Login (Local check of fixed password)
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminError('');
@@ -368,31 +471,19 @@ export default function App() {
       return;
     }
 
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: adminPassword })
+    if (adminPassword === 'desafio/app') {
+      const mockToken = 'admin-token-' + Date.now();
+      setAuth({
+        token: mockToken,
+        isAuthenticated: true,
+        role: 'admin'
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAuth({
-          token: data.token,
-          isAuthenticated: true,
-          role: 'admin'
-        });
-        localStorage.setItem('edna_token', data.token);
-        localStorage.setItem('edna_role', 'admin');
-        setAdminPassword('');
-        showToast('Acesso de administrador autorizado!', 'success');
-      } else {
-        const err = await res.json();
-        setAdminError(err.error || 'Senha inválida');
-        showToast('Senha administrativa incorreta.', 'alert');
-      }
-    } catch (err) {
-      setAdminError('Erro de servidor.');
+      localStorage.setItem('edna_token', mockToken);
+      localStorage.setItem('edna_role', 'admin');
+      setAdminPassword('');
+      showToast('Acesso de administrador autorizado!', 'success');
+    } else {
+      setAdminError('Senha incorreta para o Admin');
     }
   };
 
@@ -445,7 +536,7 @@ export default function App() {
     return cart.reduce((acc, curr) => acc + curr.product.price * curr.quantity, 0);
   };
 
-  // Submit Order from Client
+  // Submit a new order to Supabase
   const handleSubmitOrder = async () => {
     if (cart.length === 0) {
       showToast('Seu carrinho está vazio!', 'alert');
@@ -457,31 +548,69 @@ export default function App() {
       const savedClientName = localStorage.getItem('edna_client_name') || 'Cliente';
       const savedClientTable = localStorage.getItem('edna_client_table') || 'Mesa';
 
-      const orderPayload = {
-        customerName: savedClientName,
-        table: savedClientTable,
-        items: cart.map((item) => ({
-          productId: item.product.id,
-          quantity: item.quantity
-        })),
-        notes: orderNotes
-      };
-
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderPayload)
-      });
-
-      if (res.ok) {
-        setCart([]);
-        setOrderNotes('');
-        showToast('🎉 Pedido enviado para a cozinha da Edna!', 'success');
-      } else {
-        showToast('Erro ao enviar pedido.', 'alert');
+      // 1. Verify if store is open
+      const { data: config, error: configErr } = await supabase
+        .from('loja_config')
+        .select('aberta')
+        .eq('id', 1)
+        .single();
+      if (configErr) throw configErr;
+      if (config && !config.aberta) {
+        showToast('A Edna Lanches está fechada no momento para novos pedidos.', 'alert');
+        return;
       }
+
+      // 2. Calculate total price from products in cart
+      const total = cart.reduce((acc, curr) => acc + (curr.product.price * curr.quantity), 0);
+
+      // 3. Generate unique sequential code
+      const { data: ultimos, error: codeErr } = await supabase
+        .from('pedidos')
+        .select('codigo')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      
+      if (codeErr) throw codeErr;
+      const proxNum = ultimos && ultimos[0] 
+        ? parseInt(ultimos[0].codigo.replace('#', ''), 10) + 1 
+        : 1001;
+      const codigo = '#' + proxNum;
+
+      // 4. Insert order header
+      const { data: newOrder, error: errPedido } = await supabase
+        .from('pedidos')
+        .insert([{
+          codigo,
+          mesa: savedClientTable,
+          cliente_nome: savedClientName,
+          preco_total: total,
+          observacoes: orderNotes || '',
+          status: 'Pendente'
+        }])
+        .select()
+        .single();
+
+      if (errPedido) throw errPedido;
+
+      // 5. Insert order items
+      const itensParaInserir = cart.map(item => ({
+        pedido_id: newOrder.id,
+        produto_id: item.product.id,
+        quantidade: item.quantity
+      }));
+
+      const { error: errItens } = await supabase
+        .from('pedido_itens')
+        .insert(itensParaInserir);
+
+      if (errItens) throw errItens;
+
+      setCart([]);
+      setOrderNotes('');
+      showToast('🎉 Pedido enviado para a cozinha da Edna!', 'success');
     } catch (e) {
-      showToast('Falha na comunicação de rede.', 'alert');
+      console.error('Error submitting order:', e);
+      showToast('Falha ao enviar o pedido para o Supabase.', 'alert');
     } finally {
       setSubmittingOrder(false);
     }
@@ -490,22 +619,14 @@ export default function App() {
   // Update Order Status (Admin action)
   const handleUpdateStatus = async (orderId: string, newStatus: OrderStatus) => {
     try {
-      const res = await fetch(`/api/orders/${orderId}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({ status: newStatus })
-      });
-
-      if (res.ok) {
-        showToast(`Status atualizado para: ${newStatus}`, 'success');
-      } else {
-        showToast('Erro ao atualizar status. Sessão expirada?', 'alert');
-      }
+      const { error } = await supabase
+        .from('pedidos')
+        .update({ status: newStatus })
+        .eq('id', orderId);
+      if (error) throw error;
+      showToast(`Status atualizado para: ${newStatus}`, 'success');
     } catch (e) {
-      showToast('Falha na rede ao atualizar status.', 'alert');
+      showToast('Falha ao atualizar status.', 'alert');
     }
   };
 
@@ -523,35 +644,27 @@ export default function App() {
     }
     setSubmittingProduct(true);
     try {
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({
-          name: newProdName.trim(),
-          description: newProdDescription.trim(),
-          price: priceNum,
-          category: newProdCategory,
-          image: newProdImage.trim()
-        })
-      });
+      const { error } = await supabase
+        .from('produtos')
+        .insert([{
+          nome: newProdName.trim(),
+          descricao: newProdDescription.trim(),
+          preco: priceNum,
+          categoria: newProdCategory,
+          imagem: newProdImage.trim()
+        }]);
 
-      if (res.ok) {
-        showToast('Produto adicionado ao cardápio com sucesso!', 'success');
-        setNewProdName('');
-        setNewProdDescription('');
-        setNewProdPrice('');
-        setNewProdCategory('');
-        setNewProdImage('');
-        fetchProducts(); // Refresh products
-      } else {
-        const err = await res.json();
-        showToast(err.error || 'Erro ao adicionar produto', 'alert');
-      }
-    } catch (err) {
-      showToast('Erro de conexão ao adicionar produto', 'alert');
+      if (error) throw error;
+
+      showToast('Produto adicionado ao cardápio com sucesso!', 'success');
+      setNewProdName('');
+      setNewProdDescription('');
+      setNewProdPrice('');
+      setNewProdCategory('');
+      setNewProdImage('');
+      fetchProducts(); // Refresh products
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao adicionar produto', 'alert');
     } finally {
       setSubmittingProduct(false);
     }
@@ -568,24 +681,16 @@ export default function App() {
     }
     
     try {
-      const res = await fetch(`/api/products/${productId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${auth.token}`
-        }
-      });
-      if (res.ok) {
-        showToast('Produto removido com sucesso.', 'success');
-        fetchProducts(); // Sync/refresh products from server to keep state identical
-      } else {
-        const err = await res.json().catch(() => ({}));
-        console.warn('Server delete failed or returned warning:', err.error);
-        showToast('Produto removido (forçado).', 'success');
-        fetchProducts();
-      }
+      const { error } = await supabase
+        .from('produtos')
+        .delete()
+        .eq('id', productId);
+      if (error) throw error;
+      showToast('Produto removido com sucesso.', 'success');
+      fetchProducts();
     } catch (err) {
       console.error('Error deleting product:', err);
-      showToast('Produto removido localmente (modo offline/forçado).', 'success');
+      showToast('Erro ao remover produto do banco.', 'alert');
     }
   };
 
@@ -604,36 +709,29 @@ export default function App() {
     }
     setSubmittingProduct(true);
     try {
-      const res = await fetch(`/api/products/${editingProduct.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({
-          name: newProdName.trim(),
-          description: newProdDescription.trim(),
-          price: priceNum,
-          category: newProdCategory,
-          image: newProdImage.trim()
+      const { error } = await supabase
+        .from('produtos')
+        .update({
+          nome: newProdName.trim(),
+          descricao: newProdDescription.trim(),
+          preco: priceNum,
+          categoria: newProdCategory,
+          imagem: newProdImage.trim()
         })
-      });
+        .eq('id', editingProduct.id);
 
-      if (res.ok) {
-        showToast('Produto atualizado com sucesso!', 'success');
-        setNewProdName('');
-        setNewProdDescription('');
-        setNewProdPrice('');
-        setNewProdCategory('');
-        setNewProdImage('');
-        setEditingProduct(null);
-        fetchProducts(); // Refresh products
-      } else {
-        const err = await res.json();
-        showToast(err.error || 'Erro ao atualizar produto', 'alert');
-      }
-    } catch (err) {
-      showToast('Erro de conexão ao atualizar produto', 'alert');
+      if (error) throw error;
+
+      showToast('Produto atualizado com sucesso!', 'success');
+      setNewProdName('');
+      setNewProdDescription('');
+      setNewProdPrice('');
+      setNewProdCategory('');
+      setNewProdImage('');
+      setEditingProduct(null);
+      fetchProducts(); // Refresh products
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao atualizar produto', 'alert');
     } finally {
       setSubmittingProduct(false);
     }
@@ -674,25 +772,12 @@ export default function App() {
     }
     setSubmittingCategory(true);
     try {
-      const res = await fetch('/api/categories', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({ category: newCategoryName.trim() })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCategories(data.categories);
-        showToast(`Categoria "${newCategoryName.trim()}" criada!`, 'success');
-        setNewCategoryName('');
-      } else {
-        const err = await res.json();
-        showToast(err.error || 'Erro ao criar categoria', 'alert');
-      }
+      const trimmed = newCategoryName.trim();
+      setCategories((prev) => Array.from(new Set([...prev, trimmed])));
+      showToast(`Categoria "${trimmed}" criada!`, 'success');
+      setNewCategoryName('');
     } catch (err) {
-      showToast('Erro de conexão ao criar categoria', 'alert');
+      showToast('Erro ao criar categoria', 'alert');
     } finally {
       setSubmittingCategory(false);
     }
@@ -702,16 +787,13 @@ export default function App() {
   const handleResetOrders = async () => {
     if (!window.confirm('Deseja realmente resetar o histórico de pedidos de demonstração?')) return;
     try {
-      const res = await fetch('/api/orders/reset', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        }
-      });
-      if (res.ok) {
-        showToast('Histórico resetado.', 'success');
-      }
+      const { error } = await supabase
+        .from('pedidos')
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000');
+      if (error) throw error;
+      setOrders([]);
+      showToast('Histórico resetado.', 'success');
     } catch (e) {
       showToast('Falha ao resetar histórico.', 'alert');
     }
@@ -720,27 +802,23 @@ export default function App() {
   // Toggle store open/closed status
   const handleToggleStore = async () => {
     try {
-      const res = await fetch('/api/store/toggle', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setIsStoreOpen(data.isOpen);
-        showToast(
-          data.isOpen 
-            ? '🏪 Loja aberta com sucesso!' 
-            : '🔒 Loja fechada temporariamente para novos pedidos!', 
-          'success'
-        );
-      } else {
-        showToast('Erro ao alterar status da loja.', 'alert');
-      }
+      const nextStatus = !isStoreOpen;
+      const { error } = await supabase
+        .from('loja_config')
+        .update({ aberta: nextStatus })
+        .eq('id', 1);
+      
+      if (error) throw error;
+
+      setIsStoreOpen(nextStatus);
+      showToast(
+        nextStatus 
+          ? '🏪 Loja aberta com sucesso!' 
+          : '🔒 Loja fechada temporariamente para novos pedidos!', 
+        'success'
+      );
     } catch (e) {
-      showToast('Falha ao comunicar com o servidor.', 'alert');
+      showToast('Erro ao alterar status da loja.', 'alert');
     }
   };
 
