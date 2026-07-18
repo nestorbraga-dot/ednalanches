@@ -116,6 +116,7 @@ export default function App() {
   const [categories, setCategories] = useState<string[]>(['Lanches', 'Porções', 'Bebidas', 'Sobremesas']);
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [orderNotes, setOrderNotes] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'Dinheiro' | 'Crédito' | 'Débito' | 'Pix' | ''>('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
   // New product form states
@@ -585,6 +586,7 @@ export default function App() {
           cliente_nome: savedClientName,
           preco_total: total,
           observacoes: orderNotes || '',
+          forma_pagamento: paymentMethod || 'Não informado',
           status: 'Pendente'
         }])
         .select()
@@ -607,6 +609,7 @@ export default function App() {
 
       setCart([]);
       setOrderNotes('');
+      setPaymentMethod('');
       showToast('🎉 Pedido enviado para a cozinha da Edna!', 'success');
     } catch (e) {
       console.error('Error submitting order:', e);
@@ -1423,6 +1426,30 @@ export default function App() {
                         ))}
                       </div>
 
+                      {/* Payment Method */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400 block">Forma de Pagamento <span className="text-red-500">*</span></label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['Pix', 'Dinheiro', 'Crédito', 'Débito'] as const).map((method) => (
+                            <button
+                              key={method}
+                              type="button"
+                              onClick={() => setPaymentMethod(method)}
+                              className={`py-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                                paymentMethod === method
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-400 hover:text-emerald-700'
+                              }`}
+                            >
+                              {method === 'Pix' ? '💸 Pix' : method === 'Dinheiro' ? '💵 Dinheiro' : method === 'Crédito' ? '💳 Crédito' : '💳 Débito'}
+                            </button>
+                          ))}
+                        </div>
+                        {!paymentMethod && (
+                          <p className="text-[10px] text-amber-600 font-medium">Selecione uma forma de pagamento para continuar.</p>
+                        )}
+                      </div>
+
                       {/* Order Notes */}
                       <div className="space-y-1.5">
                         <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400 block">Observações do Pedido</label>
@@ -1430,7 +1457,7 @@ export default function App() {
                           value={orderNotes}
                           onChange={(e) => setOrderNotes(e.target.value)}
                           placeholder="Ex: sem cebola, ponto da carne, gelo no copo..."
-                          rows={3}
+                          rows={2}
                           className="w-full text-xs p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500 placeholder:text-slate-400 transition-all resize-none"
                         />
                       </div>
@@ -1515,7 +1542,13 @@ export default function App() {
                         </motion.div>
                       ) : (
                         <button
-                          onClick={() => setShowOrderConfirmation(true)}
+                          onClick={() => {
+                            if (!paymentMethod) {
+                              showToast('Por favor, selecione uma forma de pagamento.', 'alert');
+                              return;
+                            }
+                            setShowOrderConfirmation(true);
+                          }}
                           disabled={submittingOrder}
                           className="w-full bg-emerald-600 text-white font-extrabold text-xs py-3 rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer active:scale-[0.98]"
                         >
@@ -1860,6 +1893,14 @@ export default function App() {
                                   ))}
                                 </div>
                               </div>
+
+                              {/* Payment Method */}
+                              {(ord as any).forma_pagamento && (
+                                <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
+                                  <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pagamento:</span>
+                                  <span className="font-semibold">{(ord as any).forma_pagamento}</span>
+                                </div>
+                              )}
 
                               {/* Order Notes */}
                               {ord.notes && (
