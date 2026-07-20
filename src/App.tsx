@@ -111,6 +111,10 @@ export default function App() {
   // Client registration details
   const [clientName, setClientName] = useState(() => localStorage.getItem('edna_client_name') || '');
   const [clientTable, setClientTable] = useState(() => localStorage.getItem('edna_client_table') || '');
+  const [rememberClient, setRememberClient] = useState(() => {
+    const v = localStorage.getItem('edna_remember_client');
+    return v === null ? true : v === 'true';
+  });
   
   // Admin login details
   const [adminPassword, setAdminPassword] = useState('');
@@ -513,23 +517,30 @@ export default function App() {
   // Client Authentication: Login (Offline / Local bypass)
   const handleClientLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!clientName.trim() || !clientTable.trim()) {
+    await performClientLogin(clientName, clientTable, rememberClient);
+  };
+
+  const performClientLogin = async (name: string, table: string, remember: boolean) => {
+    if (!name.trim() || !table.trim()) {
       showToast('Por favor, informe seu Nome e o número da Mesa.', 'alert');
       return;
     }
 
     const mockToken = 'client-token-' + Date.now();
-    setAuth({
-      token: mockToken,
-      isAuthenticated: true,
-      role: 'client'
-    });
+    setAuth({ token: mockToken, isAuthenticated: true, role: 'client' });
     localStorage.setItem('edna_token', mockToken);
     localStorage.setItem('edna_role', 'client');
-    localStorage.setItem('edna_client_name', clientName);
-    localStorage.setItem('edna_client_table', clientTable);
+    if (remember) {
+      localStorage.setItem('edna_client_name', name);
+      localStorage.setItem('edna_client_table', table);
+      localStorage.setItem('edna_remember_client', 'true');
+    } else {
+      localStorage.removeItem('edna_client_name');
+      localStorage.removeItem('edna_client_table');
+      localStorage.setItem('edna_remember_client', 'false');
+    }
     setClientTab('cardapio');
-    showToast(`Bem-vindo(a) à mesa ${clientTable}, ${clientName}!`, 'success');
+    showToast(`Bem-vindo(a) à mesa ${table}, ${name}!`, 'success');
   };
 
   // Admin Authentication: Login (Local check of fixed password)
@@ -1188,6 +1199,25 @@ export default function App() {
                           Ver Cardápio
                         </button>
                       </form>
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <label className="flex items-center gap-2 text-sm text-white/90">
+                          <input
+                            type="checkbox"
+                            checked={rememberClient}
+                            onChange={(e) => setRememberClient(e.target.checked)}
+                            className="w-4 h-4"
+                          />
+                          <span className="text-[13px]">Lembrar meus dados</span>
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => performClientLogin('Balcão', '0', rememberClient)}
+                            className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2 px-3 rounded-xl shadow"
+                          >
+                            Balcão
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ) : (
