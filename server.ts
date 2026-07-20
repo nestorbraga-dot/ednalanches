@@ -336,6 +336,7 @@ app.get('/api/orders', async (req, res) => {
           customerName: order.cliente_nome,
           items: processedItems,
           status: order.status,
+          archived: Boolean(order.arquivado || order.archived),
           totalPrice: Number(order.preco_total),
           createdAt: order.created_at,
           notes: order.observacoes || ''
@@ -346,6 +347,51 @@ app.get('/api/orders', async (req, res) => {
     res.json(fullOrders);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao buscar pedidos', details: err.message });
+  }
+});
+
+// Archive a specific order (admin only)
+app.patch('/api/orders/:id/archive', authenticateToken, async (req: any, res: any) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acesso negado. Apenas admin pode arquivar pedidos.' });
+  }
+
+  const { id } = req.params;
+  try {
+    const { data: updatedOrderData, error: updateErr } = await supabase
+      .from('pedidos')
+      .update({ arquivado: true })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateErr) throw updateErr;
+
+    // Broadcast archived event
+    broadcastEvent('ORDER_ARCHIVED', { id: updatedOrderData.id });
+
+    res.json({ success: true, id: updatedOrderData.id });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao arquivar pedido', details: err.message });
+  }
+});
+
+// Delete all archived orders (admin only)
+app.delete('/api/orders/archived', authenticateToken, async (req: any, res: any) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acesso negado. Apenas admin pode apagar pedidos arquivados.' });
+  }
+  try {
+    const { error } = await supabase
+      .from('pedidos')
+      .delete()
+      .eq('arquivado', true);
+    if (error) throw error;
+
+    broadcastEvent('ARCHIVED_CLEARED', []);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao apagar pedidos arquivados', details: err.message });
   }
 });
 

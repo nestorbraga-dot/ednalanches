@@ -81,6 +81,10 @@ export default function App() {
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [loadingOrders, setLoadingOrders] = useState(true);
 
+  // Archived orders (client-side tracking + persisted if DB column exists)
+  const [archivedOrderIds, setArchivedOrderIds] = useState<string[]>([]);
+  const [showArchivedOrders, setShowArchivedOrders] = useState(false);
+
   // Store Status State
   const [isStoreOpen, setIsStoreOpen] = useState(true);
 
@@ -193,6 +197,57 @@ export default function App() {
     }
   };
 
+  // Archive a delivered order (admin)
+  const handleArchiveOrder = async (orderId: string) => {
+    // Optimistic UI: mark archived locally and remove from visible orders
+    setArchivedOrderIds(prev => prev.includes(orderId) ? prev : [...prev, orderId]);
+    setOrders(prev => prev.filter(o => o.id !== orderId));
+
+    try {
+      const { error } = await supabase
+        .from('pedidos')
+        .update({ arquivado: true })
+        .eq('id', orderId);
+      if (error) {
+        // If DB update fails, show message but keep local archive
+        showToast('Falha ao arquivar no banco: ' + error.message, 'alert');
+      } else {
+        showToast('Pedido arquivado com sucesso.', 'success');
+      }
+    } catch (e: any) {
+      console.error('Error archiving order:', e);
+      showToast('Erro ao arquivar pedido: ' + e.message, 'alert');
+    }
+  };
+
+  // Delete all archived orders (admin)
+  const handleClearArchived = async () => {
+    if (archivedOrderIds.length === 0) {
+      showToast('Não há pedidos arquivados para apagar.', 'info');
+      return;
+    }
+    if (!window.confirm('Tem certeza que deseja apagar todos os pedidos arquivados? Essa ação é irreversível.')) return;
+
+    // Optimistic UI: remove archived ids locally
+    const idsToRemove = [...archivedOrderIds];
+    setArchivedOrderIds([]);
+    setOrders(prev => prev.filter(o => !idsToRemove.includes(o.id)));
+
+    try {
+      const { error } = await supabase
+        .from('pedidos')
+        .delete()
+        .in('id', idsToRemove);
+      if (error) throw error;
+      showToast('Pedidos arquivados apagados com sucesso.', 'success');
+    } catch (e: any) {
+      console.error('Error deleting archived orders:', e);
+      showToast('Falha ao apagar pedidos arquivados: ' + e.message, 'alert');
+      // Refresh from server to recover state
+      fetchOrders();
+    }
+  };
+
   const fetchCategories = async () => {
     try {
       const { data, error } = await supabase
@@ -266,6 +321,7 @@ export default function App() {
             customerName: order.cliente_nome,
             items: processedItems,
             status: order.status,
+            archived: Boolean(order.arquivado || order.archived),
             totalPrice: Number(order.preco_total),
             createdAt: order.created_at,
             notes: order.observacoes || ''
@@ -273,6 +329,8 @@ export default function App() {
         })
       );
       setOrders(fullOrders);
+      // populate archived ids for quick filtering
+      setArchivedOrderIds(fullOrders.filter((o: any) => o.archived).map((o: any) => o.id));
     } catch (e) {
       console.error('Error fetching orders:', e);
     } finally {
@@ -923,9 +981,15 @@ export default function App() {
   });
 
   // Filter orders by status for Admin view
-  const filteredOrders = orders.filter(
-    (o) => adminFilter === 'Todos' || o.status === adminFilter
-  );
+  const filteredOrders = orders.filter((o) => {
+    const isArchived = !!(o as any).archived;
+    if (showArchivedOrders) {
+      if (!isArchived) return false;
+    } else {
+      if (isArchived) return false;
+    }
+    return adminFilter === 'Todos' || o.status === adminFilter;
+  });
 
   // Active client orders
   const clientActiveOrders = orders.filter(
@@ -1821,6 +1885,20 @@ export default function App() {
                       Resetar Demo
                     </button>
                     <button
+                      onClick={() => setShowArchivedOrders((s) => !s)}
+                      className={`text-xs px-2 py-1.5 rounded transition-colors ${showArchivedOrders ? 'bg-slate-900 text-white' : 'text-slate-400 hover:text-slate-700'}`}
+                      title="Alternar visualização de pedidos arquivados"
+                    >
+                      {showArchivedOrders ? 'Exibir Ativos' : 'Exibir Arquivados'}
+                    </button>
+                    <button
+                      onClick={handleClearArchived}
+                      className="text-xs text-slate-400 hover:text-red-500 px-2 py-1.5 rounded transition-colors"
+                      title="Apagar todos os pedidos arquivados"
+                    >
+                      Apagar Arquivados
+                    </button>
+                    <button
                       onClick={handleLogout}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
                       title="Sair do Administrador"
@@ -1960,9 +2038,19 @@ export default function App() {
                                 </button>
                               )}
                               {ord.status === 'Entregue' && (
-                                <div className="flex-1 bg-slate-100 text-slate-500 font-bold text-xs py-2 rounded-xl text-center border border-slate-200">
-                                  ✓ Finalizado
-                                </div>
+                                <>
+                                  <div className="flex-1 bg-slate-100 text-slate-500 font-bold text-xs py-2 rounded-xl text-center border border-slate-200">
+                                    ✓ Finalizado
+                                  </div>
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() => handleArchiveOrder(ord.id)}
+                                      className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 rounded-xl shadow transition-colors"
+                                    >
+                                      Arquivar
+                                    </button>
+                                  )}
+                                </>
                               )}
                             </div>
                           </motion.div>

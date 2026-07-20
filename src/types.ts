@@ -29,6 +29,10 @@ export interface Order {
   totalPrice: number;
   createdAt: string;
   notes?: string;
+  paymentMethod?: string;
+  amountPaid?: number;
+  cashChange?: number;
+  archived?: boolean;
 }
 
 export interface AuthState {
