@@ -126,6 +126,7 @@ export default function App() {
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [orderNotes, setOrderNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'Dinheiro' | 'Crédito' | 'Débito' | 'Pix' | ''>('');
+  const [amountPaid, setAmountPaid] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
   // New product form states
@@ -328,7 +329,10 @@ export default function App() {
             archived: Boolean(order.arquivado || order.archived),
             totalPrice: Number(order.preco_total),
             createdAt: order.created_at,
-            notes: order.observacoes || ''
+            notes: order.observacoes || '',
+            paymentMethod: order.forma_pagamento || undefined,
+            amountPaid: order.valor_pago != null ? Number(order.valor_pago) : undefined,
+            cashChange: order.troco != null ? Number(order.troco) : undefined
           };
         })
       );
@@ -402,7 +406,10 @@ export default function App() {
                 status: newOrder.status,
                 totalPrice: Number(newOrder.preco_total),
                 createdAt: newOrder.created_at,
-                notes: newOrder.observacoes || ''
+                notes: newOrder.observacoes || '',
+                paymentMethod: newOrder.forma_pagamento || undefined,
+                amountPaid: newOrder.valor_pago != null ? Number(newOrder.valor_pago) : undefined,
+                cashChange: newOrder.troco != null ? Number(newOrder.troco) : undefined
               };
 
               const savedClientName = localStorage.getItem('edna_client_name');
@@ -459,7 +466,10 @@ export default function App() {
                 status: updatedOrder.status,
                 totalPrice: Number(updatedOrder.preco_total),
                 createdAt: updatedOrder.created_at,
-                notes: updatedOrder.observacoes || ''
+                notes: updatedOrder.observacoes || '',
+                paymentMethod: updatedOrder.forma_pagamento || undefined,
+                amountPaid: updatedOrder.valor_pago != null ? Number(updatedOrder.valor_pago) : undefined,
+                cashChange: updatedOrder.troco != null ? Number(updatedOrder.troco) : undefined
               };
 
               setOrders((prev) => prev.map((o) => (o.id === completedOrder.id ? completedOrder : o)));
@@ -618,6 +628,14 @@ export default function App() {
     return cart.reduce((acc, curr) => acc + curr.product.price * curr.quantity, 0);
   };
 
+  const getCashChange = () => {
+    if (paymentMethod !== 'Dinheiro') return null;
+    const total = getCartTotal();
+    const paid = Number(amountPaid);
+    if (!Number.isFinite(paid) || paid < total) return null;
+    return paid - total;
+  };
+
   // Submit a new order to Supabase
   const handleSubmitOrder = async () => {
     if (cart.length === 0) {
@@ -645,6 +663,14 @@ export default function App() {
       // 2. Calculate total price from products in cart
       const total = cart.reduce((acc, curr) => acc + (curr.product.price * curr.quantity), 0);
 
+      if (paymentMethod === 'Dinheiro') {
+        const paid = Number(amountPaid);
+        if (!Number.isFinite(paid) || paid < total) {
+          showToast('Informe um valor pago em dinheiro maior ou igual ao total do pedido.', 'alert');
+          return;
+        }
+      }
+
       // 3. Generate unique sequential code
       const { data: ultimos, error: codeErr } = await supabase
         .from('pedidos')
@@ -659,19 +685,46 @@ export default function App() {
       const codigo = '#' + proxNum;
 
       // 4. Insert order header
-      const { data: newOrder, error: errPedido } = await supabase
-        .from('pedidos')
-        .insert([{
-          codigo,
-          mesa: savedClientTable,
-          cliente_nome: savedClientName,
-          preco_total: total,
-          observacoes: orderNotes || '',
-          forma_pagamento: paymentMethod || 'Não informado',
-          status: 'Pendente'
-        }])
-        .select()
-        .single();
+      const baseOrderPayload = {
+        codigo,
+        mesa: savedClientTable,
+        cliente_nome: savedClientName,
+        preco_total: total,
+        observacoes: orderNotes || '',
+        forma_pagamento: paymentMethod || 'Não informado',
+        status: 'Pendente' as const
+      };
+
+      const orderPayloadWithPayment = {
+        ...baseOrderPayload,
+        valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
+        troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null
+      };
+
+      let newOrder;
+      let errPedido;
+
+      try {
+        const response = await supabase
+          .from('pedidos')
+          .insert([orderPayloadWithPayment])
+          .select()
+          .single();
+        newOrder = response.data;
+        errPedido = response.error;
+      } catch (e) {
+        errPedido = e as any;
+      }
+
+      if (errPedido && (errPedido.message?.includes('valor_pago') || errPedido.message?.includes('troco') || errPedido.message?.includes('column'))) {
+        const fallbackResponse = await supabase
+          .from('pedidos')
+          .insert([baseOrderPayload])
+          .select()
+          .single();
+        newOrder = fallbackResponse.data;
+        errPedido = fallbackResponse.error;
+      }
 
       if (errPedido) throw errPedido;
 
@@ -691,6 +744,7 @@ export default function App() {
       setCart([]);
       setOrderNotes('');
       setPaymentMethod('');
+      setAmountPaid('');
       showToast('🎉 Pedido enviado para a cozinha da Edna!', 'success');
     } catch (e) {
       console.error('Error submitting order:', e);
@@ -1568,6 +1622,26 @@ export default function App() {
                         />
                       </div>
 
+                      {paymentMethod === 'Dinheiro' && (
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400 block">Valor Pago em Dinheiro</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={amountPaid}
+                            onChange={(e) => setAmountPaid(e.target.value)}
+                            placeholder="Ex: 30.00"
+                            className="w-full text-xs p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500 placeholder:text-slate-400 transition-all"
+                          />
+                          {amountPaid && Number(amountPaid) >= getCartTotal() && (
+                            <p className="text-[10px] font-semibold text-emerald-700">
+                              Troco estimado: R$ {((Number(amountPaid) - getCartTotal()) || 0).toFixed(2)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Total Summary */}
                       <div className="pt-3 border-t border-slate-100 space-y-2">
                         <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
@@ -2015,10 +2089,24 @@ export default function App() {
                               </div>
 
                               {/* Payment Method */}
-                              {(ord as any).forma_pagamento && (
-                                <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
-                                  <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pagamento:</span>
-                                  <span className="font-semibold">{(ord as any).forma_pagamento}</span>
+                              {(ord.paymentMethod || (ord as any).forma_pagamento) && (
+                                <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-xl text-xs text-emerald-800 space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pagamento:</span>
+                                    <span className="font-semibold">{ord.paymentMethod || (ord as any).forma_pagamento}</span>
+                                  </div>
+                                  {ord.amountPaid != null && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pago:</span>
+                                      <span className="font-semibold">R$ {ord.amountPaid.toFixed(2)}</span>
+                                    </div>
+                                  )}
+                                  {ord.cashChange != null && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Troco:</span>
+                                      <span className="font-semibold">R$ {ord.cashChange.toFixed(2)}</span>
+                                    </div>
+                                  )}
                                 </div>
                               )}
 
