@@ -102,6 +102,7 @@ export default function App() {
       role: savedRole
     };
   });
+  const isAdmin = auth.isAuthenticated && auth.role === 'admin';
 
   // Client registration details
   const [clientName, setClientName] = useState(() => localStorage.getItem('edna_client_name') || '');
@@ -342,15 +343,25 @@ export default function App() {
                 notes: newOrder.observacoes || ''
               };
 
-              setOrders((prev) => {
-                if (prev.some(o => o.id === completedOrder.id)) return prev;
-                return [completedOrder, ...prev];
-              });
+              const savedClientName = localStorage.getItem('edna_client_name');
+              const savedClientTable = localStorage.getItem('edna_client_table');
+              const isOwnOrder =
+                completedOrder.customerName === savedClientName &&
+                completedOrder.table === savedClientTable;
 
-              if (soundEnabled) {
-                playKitchenWhistle();
+              if (isAdmin || isOwnOrder) {
+                setOrders((prev) => {
+                  if (prev.some(o => o.id === completedOrder.id)) return prev;
+                  return [completedOrder, ...prev];
+                });
               }
-              showToast(`🔔 Novo pedido recebido: ${completedOrder.code} da Mesa ${completedOrder.table}!`, 'info');
+
+              if (isAdmin) {
+                if (soundEnabled) {
+                  playKitchenWhistle();
+                }
+                showToast(`🔔 Novo pedido recebido: ${completedOrder.code} da Mesa ${completedOrder.table}!`, 'info');
+              }
             } catch (err) {
               console.error('Error handling new real-time order:', err);
             }
@@ -421,7 +432,8 @@ export default function App() {
       )
       .subscribe();
 
-    if ('Notification' in window && Notification.permission === 'default') {
+    if ('Notification' in window && Notification.permission === 'default' && !isAdmin) {
+      // Only ask non-admin clients for browser notification permission
       Notification.requestPermission();
     }
 
@@ -429,7 +441,7 @@ export default function App() {
       supabase.removeChannel(configChannel);
       supabase.removeChannel(pedidosChannel);
     };
-  }, [soundEnabled]);
+  }, [soundEnabled, isAdmin]);
 
   const triggerNotification = (title: string, body: string) => {
     if ('Notification' in window && Notification.permission === 'granted') {
