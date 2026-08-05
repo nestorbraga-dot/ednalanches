@@ -10,7 +10,8 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
-
+import multer from 'multer';
+import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -518,7 +519,7 @@ app.patch('/api/orders/:id/status', authenticateToken, async (req: any, res: any
   const { id } = req.params;
   const { status } = req.body;
 
-  const validStatuses = ['Pendente', 'Em Preparo', 'Pronto', 'Entregue'];
+  const validStatuses = ['Pendente', 'Em Preparo', 'Pronto', 'Saiu para Entrega', 'Entregue'];
   if (!validStatuses.includes(status)) {
     return res.status(400).json({ error: 'Status inválido' });
   }

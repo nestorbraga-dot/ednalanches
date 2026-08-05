@@ -37,13 +37,20 @@ import {
   Sun,
   Moon,
   Power,
-  Store
+  Store,
+  Bike,
+  MapPin,
+  Home,
+  Phone,
+  ShieldCheck,
+  Navigation,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SupabaseGuide from './components/SupabaseGuide';
 import ReactNativeCode from './components/ReactNativeCode';
 import { playKitchenWhistle, playOrderReadySound, playEasterEggSound } from './components/Buzzer';
-import { Product, Order, OrderItem, AuthState, OrderStatus } from './types';
+import { Product, Order, OrderItem, AuthState, OrderStatus, OrderType, DeliveryAddress } from './types';
 import { supabase } from './lib/supabase';
 
 export default function App() {
@@ -129,6 +136,17 @@ export default function App() {
   const [amountPaid, setAmountPaid] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
 
+  // Delivery & Logistics states
+  const [orderType, setOrderType] = useState<OrderType>('mesa');
+  const [deliveryPhone, setDeliveryPhone] = useState(() => localStorage.getItem('edna_delivery_phone') || '');
+  const [deliveryStreet, setDeliveryStreet] = useState(() => localStorage.getItem('edna_delivery_street') || '');
+  const [deliveryNumber, setDeliveryNumber] = useState(() => localStorage.getItem('edna_delivery_number') || '');
+  const [deliveryNeighborhood, setDeliveryNeighborhood] = useState(() => localStorage.getItem('edna_delivery_neighborhood') || '');
+  const [deliveryComplement, setDeliveryComplement] = useState(() => localStorage.getItem('edna_delivery_complement') || '');
+  const [deliveryReference, setDeliveryReference] = useState(() => localStorage.getItem('edna_delivery_reference') || '');
+  const [deliveryInstructions, setDeliveryInstructions] = useState<string>('Tocar campainha');
+  const deliveryFee = 5.00;
+
   // New product form states
   const [newProdName, setNewProdName] = useState('');
   const [newProdDescription, setNewProdDescription] = useState('');
@@ -170,7 +188,7 @@ export default function App() {
   const [adminTab, setAdminTab] = useState<'orders' | 'products' | 'supabase' | 'reactnative'>('orders');
 
   // Order status filter in admin panel
-  const [adminFilter, setAdminFilter] = useState<'Todos' | 'Pendente' | 'Em Preparo' | 'Pronto' | 'Entregue'>('Todos');
+  const [adminFilter, setAdminFilter] = useState<'Todos' | 'Pendente' | 'Em Preparo' | 'Pronto' | 'Saiu para Entrega' | 'Entregue'>('Todos');
 
   // Toast helper
   const showToast = (message: string, type: 'success' | 'info' | 'alert' = 'success') => {
@@ -222,6 +240,31 @@ export default function App() {
     } catch (e: any) {
       console.error('Error archiving order:', e);
       showToast('Erro ao arquivar pedido: ' + e.message, 'alert');
+    }
+  };
+
+  // Cancel order (Client - allowed only when status is 'Pendente')
+  const handleCancelOrderClient = async (orderId: string) => {
+    const targetOrder = orders.find(o => o.id === orderId);
+    if (targetOrder && targetOrder.status !== 'Pendente') {
+      showToast('O pedido já está em preparo e não pode ser cancelado pelo app.', 'alert');
+      return;
+    }
+    if (!window.confirm('Tem certeza que deseja cancelar este pedido?')) return;
+
+    setOrders(prev => prev.filter(o => o.id !== orderId));
+
+    try {
+      const { error } = await supabase
+        .from('pedidos')
+        .delete()
+        .eq('id', orderId);
+      if (error) throw error;
+      showToast('Pedido cancelado com sucesso.', 'info');
+    } catch (e: any) {
+      console.error('Error canceling order:', e);
+      showToast('Falha ao cancelar pedido: ' + e.message, 'alert');
+      fetchOrders();
     }
   };
 
@@ -290,6 +333,35 @@ export default function App() {
     }
   };
 
+  const parseDeliveryFromOrderRow = (orderRow: any) => {
+    let deliveryAddrParsed: DeliveryAddress | undefined = undefined;
+    if (orderRow.deliveryAddress) {
+      deliveryAddrParsed = orderRow.deliveryAddress;
+    } else if (orderRow.endereco_entrega) {
+      try {
+        deliveryAddrParsed = typeof orderRow.endereco_entrega === 'string' 
+          ? JSON.parse(orderRow.endereco_entrega) 
+          : orderRow.endereco_entrega;
+      } catch (e) {
+        console.error('Error parsing endereco_entrega:', e);
+      }
+    }
+
+    const mesaLower = (orderRow.mesa || '').toLowerCase();
+    const parsedOrderType: OrderType = orderRow.tipo_pedido || (
+      mesaLower.includes('delivery') ? 'delivery' :
+      mesaLower.includes('balc') ? 'balcao' : 'mesa'
+    );
+
+    return {
+      orderType: parsedOrderType,
+      customerPhone: orderRow.cliente_telefone || deliveryAddrParsed?.phone || undefined,
+      deliveryAddress: deliveryAddrParsed,
+      deliveryFee: orderRow.taxa_entrega != null ? Number(orderRow.taxa_entrega) : (parsedOrderType === 'delivery' ? 5.00 : 0),
+      deliveryPin: orderRow.pin_entrega || undefined
+    };
+  };
+
   const fetchOrders = async () => {
     try {
       setLoadingOrders(true);
@@ -319,11 +391,18 @@ export default function App() {
             quantity: item.quantidade
           }));
 
+          const delData = parseDeliveryFromOrderRow(order);
+
           return {
             id: order.id,
             code: order.codigo,
             table: order.mesa,
             customerName: order.cliente_nome,
+            orderType: delData.orderType,
+            customerPhone: delData.customerPhone,
+            deliveryAddress: delData.deliveryAddress,
+            deliveryFee: delData.deliveryFee,
+            deliveryPin: delData.deliveryPin,
             items: processedItems,
             status: order.status,
             archived: Boolean(order.arquivado || order.archived),
@@ -397,11 +476,18 @@ export default function App() {
                 quantity: item.quantidade
               }));
 
-              const completedOrder = {
+              const delData = parseDeliveryFromOrderRow(newOrder);
+
+              const completedOrder: Order = {
                 id: newOrder.id,
                 code: newOrder.codigo,
                 table: newOrder.mesa,
                 customerName: newOrder.cliente_nome,
+                orderType: delData.orderType,
+                customerPhone: delData.customerPhone,
+                deliveryAddress: delData.deliveryAddress,
+                deliveryFee: delData.deliveryFee,
+                deliveryPin: delData.deliveryPin,
                 items: processedItems,
                 status: newOrder.status,
                 totalPrice: Number(newOrder.preco_total),
@@ -416,7 +502,7 @@ export default function App() {
               const savedClientTable = localStorage.getItem('edna_client_table');
               const isOwnOrder =
                 completedOrder.customerName === savedClientName &&
-                completedOrder.table === savedClientTable;
+                (completedOrder.table === savedClientTable || completedOrder.orderType === 'delivery');
 
               if (isAdmin || isOwnOrder) {
                 setOrders((prev) => {
@@ -429,7 +515,8 @@ export default function App() {
                 if (soundEnabled) {
                   playKitchenWhistle();
                 }
-                showToast(`🔔 Novo pedido recebido: ${completedOrder.code} da Mesa ${completedOrder.table}!`, 'info');
+                const labelMesa = completedOrder.orderType === 'delivery' ? '🛵 DELIVERY' : `Mesa ${completedOrder.table}`;
+                showToast(`🔔 Novo pedido recebido: ${completedOrder.code} (${labelMesa})!`, 'info');
               }
             } catch (err) {
               console.error('Error handling new real-time order:', err);
@@ -457,11 +544,18 @@ export default function App() {
                 quantity: item.quantidade
               }));
 
-              const completedOrder = {
+              const delData = parseDeliveryFromOrderRow(updatedOrder);
+
+              const completedOrder: Order = {
                 id: updatedOrder.id,
                 code: updatedOrder.codigo,
                 table: updatedOrder.mesa,
                 customerName: updatedOrder.cliente_nome,
+                orderType: delData.orderType,
+                customerPhone: delData.customerPhone,
+                deliveryAddress: delData.deliveryAddress,
+                deliveryFee: delData.deliveryFee,
+                deliveryPin: delData.deliveryPin,
                 items: processedItems,
                 status: updatedOrder.status,
                 totalPrice: Number(updatedOrder.preco_total),
@@ -475,15 +569,15 @@ export default function App() {
               setOrders((prev) => prev.map((o) => (o.id === completedOrder.id ? completedOrder : o)));
 
               const savedClientName = localStorage.getItem('edna_client_name');
-              const savedClientTable = localStorage.getItem('edna_client_table');
 
-              if (
-                completedOrder.customerName === savedClientName &&
-                completedOrder.table === savedClientTable
-              ) {
+              if (completedOrder.customerName === savedClientName || completedOrder.orderType === 'delivery') {
                 if (completedOrder.status === 'Em Preparo') {
                   showToast(`🍳 Edna está preparando o seu pedido ${completedOrder.code}!`, 'success');
                   if (soundEnabled) playOrderReadySound();
+                } else if (completedOrder.status === 'Saiu para Entrega') {
+                  showToast(`🛵 Seu pedido ${completedOrder.code} saiu para entrega com o motoboy!`, 'info');
+                  if (soundEnabled) playOrderReadySound();
+                  triggerNotification(`Seu lanche está a caminho! 🛵`, `O motoboy saiu com seu pedido ${completedOrder.code}. Prepare o código PIN ao receber!`);
                 } else if (completedOrder.status === 'Pronto') {
                   showToast(`🎉 Pedido ${completedOrder.code} pronto! Venha ao balcão retirá-lo.`, 'success');
                   if (soundEnabled) playOrderReadySound();
@@ -628,9 +722,14 @@ export default function App() {
     return cart.reduce((acc, curr) => acc + curr.product.price * curr.quantity, 0);
   };
 
+  const getGrandTotal = () => {
+    const sub = getCartTotal();
+    return sub + (orderType === 'delivery' ? deliveryFee : 0);
+  };
+
   const getCashChange = () => {
     if (paymentMethod !== 'Dinheiro') return null;
-    const total = getCartTotal();
+    const total = getGrandTotal();
     const paid = Number(amountPaid);
     if (!Number.isFinite(paid) || paid < total) return null;
     return paid - total;
@@ -643,10 +742,49 @@ export default function App() {
       return;
     }
 
+    if (orderType === 'delivery') {
+      if (!deliveryPhone.trim()) {
+        showToast('Por favor, informe seu telefone/WhatsApp para a entrega.', 'alert');
+        return;
+      }
+      if (!deliveryStreet.trim() || !deliveryNumber.trim() || !deliveryNeighborhood.trim()) {
+        showToast('Por favor, preencha o endereço completo (Rua, Número e Bairro).', 'alert');
+        return;
+      }
+      if (!deliveryReference.trim()) {
+        showToast('Por favor, inclua um ponto de referência para ajudar o motoboy!', 'alert');
+        return;
+      }
+
+      // Persist delivery address in localStorage for future quick orders
+      localStorage.setItem('edna_delivery_phone', deliveryPhone.trim());
+      localStorage.setItem('edna_delivery_street', deliveryStreet.trim());
+      localStorage.setItem('edna_delivery_number', deliveryNumber.trim());
+      localStorage.setItem('edna_delivery_neighborhood', deliveryNeighborhood.trim());
+      localStorage.setItem('edna_delivery_complement', deliveryComplement.trim());
+      localStorage.setItem('edna_delivery_reference', deliveryReference.trim());
+    }
+
     setSubmittingOrder(true);
     try {
-      const savedClientName = localStorage.getItem('edna_client_name') || 'Cliente';
-      const savedClientTable = localStorage.getItem('edna_client_table') || 'Mesa';
+      let savedClientName = localStorage.getItem('edna_client_name') || '';
+      let savedClientTable = localStorage.getItem('edna_client_table') || 'Mesa';
+
+      if (!savedClientName && orderType === 'delivery') {
+        savedClientName = `Cliente Delivery (${deliveryPhone.slice(-4)})`;
+      } else if (!savedClientName) {
+        savedClientName = 'Cliente';
+      }
+
+      // Auto authenticate guest as client if not authenticated
+      if (!auth.isAuthenticated) {
+        const guestToken = 'delivery_' + Date.now();
+        localStorage.setItem('edna_token', guestToken);
+        localStorage.setItem('edna_role', 'client');
+        localStorage.setItem('edna_client_name', savedClientName);
+        setAuth({ token: guestToken, isAuthenticated: true, role: 'client' });
+        setClientName(savedClientName);
+      }
 
       // 1. Verify if store is open
       const { data: config, error: configErr } = await supabase
@@ -660,18 +798,18 @@ export default function App() {
         return;
       }
 
-      // 2. Calculate total price from products in cart
-      const total = cart.reduce((acc, curr) => acc + (curr.product.price * curr.quantity), 0);
+      // 2. Calculate grand total
+      const total = getGrandTotal();
 
       if (paymentMethod === 'Dinheiro') {
         const paid = Number(amountPaid);
         if (!Number.isFinite(paid) || paid < total) {
-          showToast('Informe um valor pago em dinheiro maior ou igual ao total do pedido.', 'alert');
+          showToast(`Informe um valor em dinheiro maior ou igual ao total de R$ ${total.toFixed(2)}.`, 'alert');
           return;
         }
       }
 
-      // 3. Generate unique sequential code
+      // 3. Generate unique sequential code & PIN
       const { data: ultimos, error: codeErr } = await supabase
         .from('pedidos')
         .select('codigo')
@@ -683,14 +821,31 @@ export default function App() {
         ? parseInt(ultimos[0].codigo.replace('#', ''), 10) + 1 
         : 1001;
       const codigo = '#' + proxNum;
+      const pin = Math.floor(1000 + Math.random() * 9000).toString();
+
+      const deliveryAddressObj: DeliveryAddress | undefined = orderType === 'delivery' ? {
+        street: deliveryStreet.trim(),
+        number: deliveryNumber.trim(),
+        neighborhood: deliveryNeighborhood.trim(),
+        complement: deliveryComplement.trim() || undefined,
+        reference: deliveryReference.trim(),
+        deliveryInstructions: deliveryInstructions || 'Tocar campainha',
+        phone: deliveryPhone.trim()
+      } : undefined;
+
+      const mesaValue = orderType === 'delivery' ? 'Delivery' : (orderType === 'balcao' ? 'Balcão' : savedClientTable);
+
+      const deliveryFormattedNotes = orderType === 'delivery'
+        ? `[🛵 DELIVERY] Tel: ${deliveryPhone.trim()} | Endereço: ${deliveryStreet.trim()}, ${deliveryNumber.trim()} - ${deliveryNeighborhood.trim()}${deliveryComplement ? ' (' + deliveryComplement.trim() + ')' : ''} | Ref: ${deliveryReference.trim()} | Inst: ${deliveryInstructions} | PIN: ${pin}${orderNotes ? ' | Obs: ' + orderNotes : ''}`
+        : (orderNotes || '');
 
       // 4. Insert order header
       const baseOrderPayload = {
         codigo,
-        mesa: savedClientTable,
+        mesa: mesaValue,
         cliente_nome: savedClientName,
         preco_total: total,
-        observacoes: orderNotes || '',
+        observacoes: deliveryFormattedNotes,
         forma_pagamento: paymentMethod || 'Não informado',
         status: 'Pendente' as const
       };
@@ -698,7 +853,12 @@ export default function App() {
       const orderPayloadWithPayment = {
         ...baseOrderPayload,
         valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
-        troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null
+        troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null,
+        tipo_pedido: orderType,
+        cliente_telefone: orderType === 'delivery' ? deliveryPhone.trim() : null,
+        endereco_entrega: deliveryAddressObj ? JSON.stringify(deliveryAddressObj) : null,
+        taxa_entrega: orderType === 'delivery' ? deliveryFee : 0,
+        pin_entrega: orderType === 'delivery' ? pin : null
       };
 
       let newOrder;
@@ -716,10 +876,16 @@ export default function App() {
         errPedido = e as any;
       }
 
-      if (errPedido && (errPedido.message?.includes('valor_pago') || errPedido.message?.includes('troco') || errPedido.message?.includes('column'))) {
+      if (errPedido) {
+        // Fallback to inserting with base schema if extra columns aren't present
+        const fallbackPayload = {
+          ...baseOrderPayload,
+          valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
+          troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null
+        };
         const fallbackResponse = await supabase
           .from('pedidos')
-          .insert([baseOrderPayload])
+          .insert([fallbackPayload])
           .select()
           .single();
         newOrder = fallbackResponse.data;
@@ -1586,6 +1752,178 @@ export default function App() {
                         ))}
                       </div>
 
+                      {/* Order Type Selector */}
+                      <div className="space-y-1.5 bg-slate-50 p-3 rounded-2xl border border-slate-200">
+                        <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-500 block flex items-center justify-between">
+                          <span>Como você deseja receber o pedido?</span>
+                          <span className="text-rose-600 font-bold">Escolha abaixo</span>
+                        </label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setOrderType('mesa')}
+                            className={`py-2.5 px-1 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                              orderType === 'mesa'
+                                ? 'bg-slate-900 text-white border-slate-900 shadow'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+                            }`}
+                          >
+                            <span className="text-base">🪑</span>
+                            <span className="text-[11px]">Na Mesa</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOrderType('balcao')}
+                            className={`py-2.5 px-1 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                              orderType === 'balcao'
+                                ? 'bg-slate-900 text-white border-slate-900 shadow'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+                            }`}
+                          >
+                            <span className="text-base">🛍️</span>
+                            <span className="text-[11px]">Retirar Balcão</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOrderType('delivery')}
+                            className={`py-2.5 px-1 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                              orderType === 'delivery'
+                                ? 'bg-rose-600 text-white border-rose-600 shadow ring-2 ring-rose-300'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-rose-400'
+                            }`}
+                          >
+                            <span className="text-base animate-bounce">🛵</span>
+                            <span className="text-[11px]">Delivery</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Delivery Address Form */}
+                      {orderType === 'delivery' && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          className="bg-rose-50/70 border border-rose-200/80 rounded-2xl p-4 space-y-3 shadow-inner"
+                        >
+                          <div className="flex items-center gap-2 border-b border-rose-200/50 pb-2 text-rose-900 font-extrabold text-xs">
+                            <Bike className="w-4 h-4 text-rose-600" />
+                            <span>Dados de Entrega a Domicílio</span>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                              Telefone / WhatsApp <span className="text-red-500">*</span>
+                            </label>
+                            <div className="relative">
+                              <Phone className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3" />
+                              <input
+                                type="tel"
+                                value={deliveryPhone}
+                                onChange={(e) => setDeliveryPhone(e.target.value)}
+                                placeholder="(11) 99999-9999"
+                                className="w-full text-xs pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="col-span-2 space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                                Rua / Avenida <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryStreet}
+                                onChange={(e) => setDeliveryStreet(e.target.value)}
+                                placeholder="Rua das Flores"
+                                className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                                Número <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryNumber}
+                                onChange={(e) => setDeliveryNumber(e.target.value)}
+                                placeholder="123"
+                                className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                                Bairro <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryNeighborhood}
+                                onChange={(e) => setDeliveryNeighborhood(e.target.value)}
+                                placeholder="Centro"
+                                className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                                Complemento
+                              </label>
+                              <input
+                                type="text"
+                                value={deliveryComplement}
+                                onChange={(e) => setDeliveryComplement(e.target.value)}
+                                placeholder="Apto 42 / Bloco B"
+                                className="w-full text-xs p-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] uppercase font-bold text-rose-800 block flex items-center gap-1">
+                              <span>Ponto de Referência</span>
+                              <span className="text-red-500">*</span>
+                              <span className="text-[9px] text-rose-600 font-normal italic">(Ajuda o motoboy a te encontrar)</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={deliveryReference}
+                              onChange={(e) => setDeliveryReference(e.target.value)}
+                              placeholder="Ex: Em frente à farmácia São João, portão azul"
+                              className="w-full text-xs p-2.5 bg-white border border-rose-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500 shadow-sm"
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] uppercase font-bold text-slate-600 block">
+                              Instrução para o Motoboy ao Chegar
+                            </label>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {[
+                                '🔔 Tocar campainha',
+                                '📱 Ligar ao chegar',
+                                '🚪 Chamar no portão',
+                                '🏢 Deixar na portaria'
+                              ].map((inst) => (
+                                <button
+                                  key={inst}
+                                  type="button"
+                                  onClick={() => setDeliveryInstructions(inst)}
+                                  className={`p-2 rounded-xl text-[11px] font-semibold border transition-all text-left cursor-pointer ${
+                                    deliveryInstructions === inst
+                                      ? 'bg-rose-600 text-white border-rose-600 shadow'
+                                      : 'bg-white text-slate-700 border-slate-200 hover:bg-rose-50'
+                                  }`}
+                                >
+                                  {inst}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+
                       {/* Payment Method */}
                       <div className="space-y-1.5">
                         <label className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400 block">Forma de Pagamento <span className="text-red-500">*</span></label>
@@ -1631,12 +1969,12 @@ export default function App() {
                             step="0.01"
                             value={amountPaid}
                             onChange={(e) => setAmountPaid(e.target.value)}
-                            placeholder="Ex: 30.00"
+                            placeholder={`Ex: ${Math.ceil(getGrandTotal() / 10) * 10}`}
                             className="w-full text-xs p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-rose-500 placeholder:text-slate-400 transition-all"
                           />
-                          {amountPaid && Number(amountPaid) >= getCartTotal() && (
+                          {amountPaid && Number(amountPaid) >= getGrandTotal() && (
                             <p className="text-[10px] font-semibold text-emerald-700">
-                              Troco estimado: R$ {((Number(amountPaid) - getCartTotal()) || 0).toFixed(2)}
+                              Troco estimado: R$ {((Number(amountPaid) - getGrandTotal()) || 0).toFixed(2)}
                             </p>
                           )}
                         </div>
@@ -1645,17 +1983,19 @@ export default function App() {
                       {/* Total Summary */}
                       <div className="pt-3 border-t border-slate-100 space-y-2">
                         <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                          <span>Subtotal:</span>
+                          <span>Subtotal dos Lanches:</span>
                           <span>R$ {getCartTotal().toFixed(2)}</span>
                         </div>
                         <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                          <span>Taxa de Mesa:</span>
-                          <span className="text-emerald-600 font-bold">Grátis</span>
+                          <span>{orderType === 'delivery' ? 'Taxa de Entrega (Delivery):' : 'Taxa de Atendimento:'}</span>
+                          <span className={orderType === 'delivery' ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>
+                            {orderType === 'delivery' ? `+ R$ ${deliveryFee.toFixed(2)}` : 'Grátis'}
+                          </span>
                         </div>
                         <div className="flex items-center justify-between pt-2 border-t border-dashed border-slate-200">
                           <span className="font-bold text-slate-800 text-sm">Total Geral:</span>
                           <span className="font-extrabold text-red-600 text-xl">
-                            R$ {getCartTotal().toFixed(2)}
+                            R$ {getGrandTotal().toFixed(2)}
                           </span>
                         </div>
                       </div>
@@ -1670,12 +2010,12 @@ export default function App() {
                             No momento a cozinha está desativada para novos pedidos. Por favor, aguarde alguns instantes ou fale com o atendente.
                           </p>
                         </div>
-                      ) : !auth.isAuthenticated || auth.role !== 'client' ? (
+                      ) : orderType === 'mesa' && (!auth.isAuthenticated || auth.role !== 'client') ? (
                         <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-col gap-3">
                           <div className="flex gap-2 items-start">
                             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                             <p className="text-xs text-amber-800 leading-relaxed">
-                              Você precisa registrar a sua mesa antes de enviar o pedido para a cozinha!
+                              Para consumo no local, informe sua mesa antes de enviar o pedido.
                             </p>
                           </div>
                           <button
@@ -1696,7 +2036,9 @@ export default function App() {
                             <h4 className="font-bold text-xs">Revisar e Enviar Pedido?</h4>
                           </div>
                           <p className="text-[11px] text-slate-600 leading-relaxed">
-                            Edna começará a preparar o seu pedido imediatamente na cozinha. Confirmar o envio de <strong>R$ {getCartTotal().toFixed(2)}</strong>?
+                            {orderType === 'delivery' 
+                              ? `Confirmar pedido com entrega no valor total de R$ ${getGrandTotal().toFixed(2)}?` 
+                              : `Edna começará a preparar o seu pedido imediatamente na cozinha. Confirmar o envio de R$ ${getGrandTotal().toFixed(2)}?`}
                           </p>
                           <div className="flex gap-2">
                             <button
@@ -1711,7 +2053,7 @@ export default function App() {
                               onClick={async () => {
                                 await handleSubmitOrder();
                                 setShowOrderConfirmation(false);
-                                setClientTab('pedidos'); // Redirect to tracking automatically! Amazing!
+                                setClientTab('pedidos'); // Redirect to tracking automatically!
                               }}
                               disabled={submittingOrder}
                               className="w-1/2 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2.5 rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-1"
@@ -1727,13 +2069,21 @@ export default function App() {
                               showToast('Por favor, selecione uma forma de pagamento.', 'alert');
                               return;
                             }
+                            if (orderType === 'delivery') {
+                              if (!deliveryPhone.trim() || !deliveryStreet.trim() || !deliveryNumber.trim() || !deliveryNeighborhood.trim() || !deliveryReference.trim()) {
+                                showToast('Por favor, preencha todos os campos do endereço de entrega.', 'alert');
+                                return;
+                              }
+                            }
                             setShowOrderConfirmation(true);
                           }}
                           disabled={submittingOrder}
-                          className="w-full bg-emerald-600 text-white font-extrabold text-xs py-3 rounded-xl hover:bg-emerald-700 transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer active:scale-[0.98]"
+                          className={`w-full text-white font-extrabold text-xs py-3 rounded-xl transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer active:scale-[0.98] ${
+                            orderType === 'delivery' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                          }`}
                         >
                           <Check className="w-4 h-4" />
-                          Enviar Pedido para Cozinha
+                          {orderType === 'delivery' ? 'Enviar Pedido de Entrega 🛵' : 'Enviar Pedido para Cozinha'}
                         </button>
                       )}
                     </div>
@@ -1755,7 +2105,7 @@ export default function App() {
                   <div className="flex items-center gap-2 pb-2 border-b border-slate-100 justify-between">
                     <div className="flex items-center gap-2">
                       <Clock className="w-5 h-5 text-red-600" />
-                      <h3 className="font-extrabold text-slate-900 text-base tracking-tight">Meus Pedidos na Mesa</h3>
+                      <h3 className="font-extrabold text-slate-900 text-base tracking-tight">Acompanhar Meus Pedidos</h3>
                     </div>
                     {clientActiveOrders.length > 0 && (
                       <span className="bg-amber-100 text-amber-800 text-xs font-bold px-3 py-1 rounded-full">
@@ -1770,14 +2120,14 @@ export default function App() {
                       <div className="space-y-1">
                         <p className="text-sm font-bold text-slate-700">Acesso Restrito</p>
                         <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-                          Você precisa estar autenticado em uma mesa para poder ver os pedidos ativos.
+                          Você precisa estar com um pedido realizado para ver o status dos seus lanches.
                         </p>
                       </div>
                       <button
-                        onClick={() => setClientTab('registro')}
+                        onClick={() => setClientTab('cardapio')}
                         className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs px-6 py-3 rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
                       >
-                        Identificar Minha Mesa
+                        Fazer um Pedido
                       </button>
                     </div>
                   ) : clientActiveOrders.length === 0 ? (
@@ -1786,7 +2136,7 @@ export default function App() {
                       <div className="space-y-1">
                         <p className="text-sm font-bold text-slate-700">Nenhum pedido ativo</p>
                         <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-                          Você ainda não fez nenhum pedido nesta mesa para a cozinha de Edna.
+                          Você ainda não tem nenhum pedido ativo na cozinha da Edna.
                         </p>
                       </div>
                       <button
@@ -1800,9 +2150,20 @@ export default function App() {
                     <div className="space-y-4">
                       {clientActiveOrders.map((ord) => (
                         <div key={ord.id} className="bg-slate-50 border border-slate-100 p-4 rounded-2xl space-y-3 shadow-sm">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
                             <div>
-                              <span className="font-extrabold text-sm text-slate-800 block">{ord.code}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-extrabold text-sm text-slate-800">{ord.code}</span>
+                                {ord.orderType === 'delivery' ? (
+                                  <span className="bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1">
+                                    🛵 Delivery
+                                  </span>
+                                ) : (
+                                  <span className="bg-slate-200 text-slate-700 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                                    Mesa {ord.table}
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-[10px] text-slate-400 font-mono">ID: {ord.id.substring(0, 8)}</span>
                             </div>
                             <span className={`text-xs font-extrabold px-3 py-1 rounded-full ${
@@ -1810,11 +2171,13 @@ export default function App() {
                             } ${
                               ord.status === 'Em Preparo' && 'bg-blue-100 text-blue-800 animate-pulse'
                             } ${
+                              ord.status === 'Saiu para Entrega' && 'bg-purple-600 text-white shadow-lg animate-bounce'
+                            } ${
                               ord.status === 'Pronto' && 'bg-emerald-100 text-emerald-800 ring-2 ring-emerald-300 animate-bounce'
                             } ${
                               ord.status === 'Entregue' && 'bg-slate-200 text-slate-700'
                             }`}>
-                              {ord.status}
+                              {ord.status === 'Saiu para Entrega' ? '🛵 Saiu para Entrega!' : ord.status}
                             </span>
                           </div>
 
@@ -1826,8 +2189,17 @@ export default function App() {
                           )}
                           {ord.status === 'Em Preparo' && (
                             <p className="text-xs text-blue-700 font-semibold leading-relaxed bg-blue-50/50 p-2.5 rounded-xl border border-blue-100/50">
-                              🍳 O lanche está no fogo! A frigideira está quente e o cheiro está ótimo!
+                              🍳 O lanche está na chapa! O cheiro está incrível!
                             </p>
+                          )}
+                          {ord.status === 'Saiu para Entrega' && (
+                            <div className="bg-purple-50 border border-purple-200 p-3 rounded-xl space-y-1">
+                              <p className="text-xs text-purple-900 font-extrabold flex items-center gap-1.5">
+                                <Bike className="w-4 h-4 text-purple-600 animate-bounce" />
+                                <span>O motoboy já está a caminho da sua casa!</span>
+                              </p>
+                              <p className="text-[11px] text-purple-700">Fique atento ao portão/interfone e esteja com o código PIN em mãos.</p>
+                            </div>
                           )}
                           {ord.status === 'Pronto' && (
                             <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl text-center">
@@ -1836,20 +2208,69 @@ export default function App() {
                           )}
                           {ord.status === 'Entregue' && (
                             <p className="text-xs text-slate-500 bg-slate-100 p-2.5 rounded-xl">
-                              😋 Pedido retirado! Bom apetite! Esperamos que goste.
+                              😋 Pedido entregue! Bom apetite! Esperamos que goste.
                             </p>
                           )}
 
-                          <div className="text-xs text-slate-600 font-medium border-t border-slate-100 pt-3 mt-1">
+                          {/* PIN display for delivery orders */}
+                          {ord.orderType === 'delivery' && ord.deliveryPin && ord.status !== 'Entregue' && (
+                            <div className="bg-rose-50 border border-rose-200 p-3 rounded-xl flex items-center justify-between shadow-inner">
+                              <div>
+                                <span className="text-[10px] uppercase font-extrabold text-rose-800 block flex items-center gap-1">
+                                  <ShieldCheck className="w-3.5 h-3.5 text-rose-600" />
+                                  <span>PIN de Segurança de Entrega</span>
+                                </span>
+                                <span className="text-[10px] text-rose-600 font-medium">Informe este código ao motoboy:</span>
+                              </div>
+                              <span className="font-mono text-xl font-black bg-white px-3 py-1 rounded-xl border border-rose-300 text-rose-700 tracking-widest shadow">
+                                {ord.deliveryPin}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="text-xs text-slate-600 font-medium border-t border-slate-100 pt-3 mt-1 space-y-1">
                             <span className="text-[10px] text-slate-400 uppercase font-extrabold tracking-wider block mb-1">Itens do Pedido:</span>
-                            {ord.items.map(item => `${item.quantity}x ${item.product.name}`).join(', ')}
+                            <div>{ord.items.map(item => `${item.quantity}x ${item.product.name}`).join(', ')}</div>
+                            <div className="font-bold text-slate-800 text-xs pt-1">
+                              Total: R$ {ord.totalPrice.toFixed(2)}
+                            </div>
                           </div>
+
                           {ord.notes && (
                             <div className="bg-white/80 rounded-xl p-2.5 border border-slate-100 text-xs text-slate-500 font-mono italic">
-                              <strong className="text-[9px] uppercase font-bold tracking-wider not-italic block text-slate-400">Obs:</strong>
+                              <strong className="text-[9px] uppercase font-bold tracking-wider not-italic block text-slate-400">Obs / Endereço:</strong>
                               "{ord.notes}"
                             </div>
                           )}
+
+                          {/* Client Cancellation Action / Lock */}
+                          {ord.status === 'Pendente' ? (
+                            <div className="pt-2 flex justify-end">
+                              <button
+                                onClick={() => handleCancelOrderClient(ord.id)}
+                                className="text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-xl transition-all border border-red-200 cursor-pointer flex items-center gap-1"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Cancelar Pedido
+                              </button>
+                            </div>
+                          ) : ord.status !== 'Entregue' ? (
+                            <div className="bg-amber-50/90 border border-amber-200 p-3 rounded-xl text-xs text-amber-900 flex items-center justify-between flex-wrap gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                                <span className="font-medium">Pedido em preparo/entrega (Trava Anti-Cancelamento ativada).</span>
+                              </div>
+                              <a
+                                href={`https://wa.me/55${(ord.customerPhone || deliveryPhone || '11999999999').replace(/\D/g, '')}?text=${encodeURIComponent(`Olá Edna Lanches! Preciso de ajuda com meu pedido ${ord.code}`)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 shrink-0 shadow"
+                              >
+                                <Phone className="w-3 h-3" />
+                                Falar no WhatsApp
+                              </a>
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -2017,7 +2438,7 @@ export default function App() {
                   <div className="space-y-6">
                     {/* Filter counters */}
                     <div className="flex flex-wrap items-center gap-2">
-                      {(['Todos', 'Pendente', 'Em Preparo', 'Pronto', 'Entregue'] as const).map((filter) => {
+                      {(['Todos', 'Pendente', 'Em Preparo', 'Saiu para Entrega', 'Pronto', 'Entregue'] as const).map((filter) => {
                         const count = filter === 'Todos' 
                           ? orders.length 
                           : orders.filter(o => o.status === filter).length;
@@ -2025,13 +2446,21 @@ export default function App() {
                           <button
                             key={filter}
                             onClick={() => setAdminFilter(filter)}
-                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                               adminFilter === filter
-                                ? 'bg-slate-900 text-white shadow'
+                                ? filter === 'Saiu para Entrega'
+                                  ? 'bg-purple-600 text-white shadow ring-2 ring-purple-300'
+                                  : 'bg-slate-900 text-white shadow'
                                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
                             }`}
                           >
-                            {filter} ({count})
+                            {filter === 'Saiu para Entrega' && <span>🛵</span>}
+                            <span>{filter}</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                              adminFilter === filter ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {count}
+                            </span>
                           </button>
                         );
                       })}
@@ -2052,127 +2481,247 @@ export default function App() {
                           </p>
                         </div>
                       ) : (
-                        filteredOrders.map((ord) => (
-                          <motion.div
-                            key={ord.id}
-                            layout
-                            className="bg-white rounded-2xl border border-slate-200 hover:border-slate-300 shadow-sm overflow-hidden flex flex-col justify-between"
-                          >
-                            {/* Card Header */}
-                            <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                              <div>
-                                <span className="font-mono text-slate-500 text-xs font-bold">{ord.code}</span>
-                                <h4 className="font-bold text-slate-900 text-sm">{ord.customerName}</h4>
-                              </div>
-                              <div className="bg-slate-900 text-white font-bold px-3 py-1.5 rounded-xl text-xs shadow-inner">
-                                Mesa {ord.table}
-                              </div>
-                            </div>
+                        filteredOrders.map((ord) => {
+                          const isDelivery = ord.orderType === 'delivery' || ord.table === 'Delivery' || !!ord.deliveryAddress;
+                          const del = ord.deliveryAddress;
+                          const phone = ord.customerPhone || del?.phone;
+                          const cleanPhone = phone ? phone.replace(/\D/g, '') : '';
+                          const fullAddress = del ? `${del.street}, ${del.number} - ${del.neighborhood}${del.complement ? ' (' + del.complement + ')' : ''}` : '';
 
-                            {/* Card Content */}
-                            <div className="p-4 flex-1 space-y-4">
-                              {/* Items list */}
-                              <div className="space-y-2">
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Produtos do Pedido</span>
-                                <div className="space-y-1">
-                                  {ord.items.map((item, idx) => (
-                                    <div key={idx} className="flex justify-between items-center text-xs">
-                                      <span className="text-slate-700 font-medium">
-                                        <strong className="text-slate-950">{item.quantity}x</strong> {item.product.name}
+                          return (
+                            <motion.div
+                              key={ord.id}
+                              layout
+                              className={`bg-white rounded-2xl border hover:shadow-md transition-all overflow-hidden flex flex-col justify-between ${
+                                isDelivery ? 'border-rose-200/90 ring-1 ring-rose-100' : 'border-slate-200'
+                              }`}
+                            >
+                              {/* Card Header */}
+                              <div className={`p-4 border-b flex items-center justify-between ${
+                                isDelivery ? 'bg-rose-50/70 border-rose-100' : 'bg-slate-50 border-slate-100'
+                              }`}>
+                                <div>
+                                  <span className="font-mono text-slate-500 text-xs font-bold">{ord.code}</span>
+                                  <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                                    <span>{ord.customerName}</span>
+                                  </h4>
+                                </div>
+                                <div className={`font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1 shadow-inner ${
+                                  isDelivery ? 'bg-rose-600 text-white' : ord.table === 'Balcão' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'
+                                }`}>
+                                  {isDelivery ? '🛵 Delivery' : ord.table === 'Balcão' ? '🛍️ Balcão' : `Mesa ${ord.table}`}
+                                </div>
+                              </div>
+
+                              {/* Card Content */}
+                              <div className="p-4 flex-1 space-y-4">
+                                {/* Delivery Address Box */}
+                                {isDelivery && (
+                                  <div className="bg-rose-50/60 border border-rose-200/80 p-3 rounded-xl space-y-2 text-xs text-rose-950 shadow-inner">
+                                    <div className="flex items-center justify-between border-b border-rose-200/50 pb-1.5">
+                                      <span className="font-extrabold text-[10px] uppercase text-rose-800 flex items-center gap-1">
+                                        <MapPin className="w-3.5 h-3.5 text-rose-600" />
+                                        Endereço de Entrega
                                       </span>
-                                      <span className="text-slate-400 font-bold">
-                                        R$ {(item.product.price * item.quantity).toFixed(2)}
-                                      </span>
+                                      {cleanPhone && (
+                                        <a
+                                          href={`https://wa.me/55${cleanPhone}?text=${encodeURIComponent(`Olá ${ord.customerName}! Seu pedido ${ord.code} da Edna Lanches já está sendo preparado!`)}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all"
+                                          title="Abrir conversa no WhatsApp"
+                                        >
+                                          <Phone className="w-2.5 h-2.5" />
+                                          WhatsApp
+                                        </a>
+                                      )}
                                     </div>
-                                  ))}
+
+                                    {del ? (
+                                      <div className="space-y-1 text-slate-700">
+                                        <p className="font-bold text-xs leading-snug">
+                                          {fullAddress}
+                                        </p>
+                                        <div className="bg-amber-100/80 border border-amber-200 text-amber-900 p-1.5 rounded-lg text-[11px] font-medium">
+                                          <strong>📍 Ref:</strong> {del.reference}
+                                        </div>
+                                        {del.deliveryInstructions && (
+                                          <p className="text-[11px] text-slate-600 italic">
+                                            <strong>Instrução:</strong> {del.deliveryInstructions}
+                                          </p>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-slate-600 italic">
+                                        {ord.notes.startsWith('[🛵 DELIVERY]') ? ord.notes : 'Ver observações abaixo.'}
+                                      </p>
+                                    )}
+
+                                    {fullAddress && (
+                                      <a
+                                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fullAddress)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[10px] text-blue-600 font-extrabold hover:underline inline-flex items-center gap-1 pt-1"
+                                      >
+                                        <Navigation className="w-3 h-3 text-blue-500" />
+                                        Abrir Rota no Google Maps <ExternalLink className="w-2.5 h-2.5" />
+                                      </a>
+                                    )}
+
+                                    {ord.deliveryPin && (
+                                      <div className="pt-1 border-t border-rose-200/50 flex items-center justify-between">
+                                        <span className="text-[10px] uppercase font-bold text-rose-800">PIN de Confirmação:</span>
+                                        <span className="font-mono font-black text-xs bg-white px-2 py-0.5 rounded border border-rose-300 text-rose-700 tracking-wider">
+                                          {ord.deliveryPin}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Items list */}
+                                <div className="space-y-2">
+                                  <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Produtos do Pedido</span>
+                                  <div className="space-y-1">
+                                    {ord.items.map((item, idx) => (
+                                      <div key={idx} className="flex justify-between items-center text-xs">
+                                        <span className="text-slate-700 font-medium">
+                                          <strong className="text-slate-950">{item.quantity}x</strong> {item.product.name}
+                                        </span>
+                                        <span className="text-slate-400 font-bold">
+                                          R$ {(item.product.price * item.quantity).toFixed(2)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Payment Method */}
+                                {(ord.paymentMethod || (ord as any).forma_pagamento) && (
+                                  <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-xl text-xs text-emerald-800 space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pagamento:</span>
+                                        <span className="font-semibold">{ord.paymentMethod || (ord as any).forma_pagamento}</span>
+                                      </div>
+                                      {ord.deliveryFee ? (
+                                        <span className="text-[10px] font-bold bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">
+                                          + Taxa R$ {ord.deliveryFee.toFixed(2)}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {ord.amountPaid != null && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pago:</span>
+                                        <span className="font-semibold">R$ {ord.amountPaid.toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                    {ord.cashChange != null && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Troco:</span>
+                                        <span className="font-semibold">R$ {ord.cashChange.toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Order Notes */}
+                                {ord.notes && !ord.notes.startsWith('[🛵 DELIVERY]') && (
+                                  <div className="bg-rose-50 border border-rose-100 p-2.5 rounded-xl text-xs text-red-800 space-y-0.5">
+                                    <span className="font-bold text-[10px] uppercase text-red-600 block">Observação:</span>
+                                    <p className="italic leading-relaxed">{ord.notes}</p>
+                                  </div>
+                                )}
+
+                                {/* Total and Date info */}
+                                <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+                                  <span className="text-slate-400 text-xs font-medium">
+                                    {new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                  <span className="font-extrabold text-slate-900 text-sm">
+                                    Total: R$ {ord.totalPrice.toFixed(2)}
+                                  </span>
                                 </div>
                               </div>
 
-                              {/* Payment Method */}
-                              {(ord.paymentMethod || (ord as any).forma_pagamento) && (
-                                <div className="bg-emerald-50 border border-emerald-100 p-2.5 rounded-xl text-xs text-emerald-800 space-y-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pagamento:</span>
-                                    <span className="font-semibold">{ord.paymentMethod || (ord as any).forma_pagamento}</span>
-                                  </div>
-                                  {ord.amountPaid != null && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Pago:</span>
-                                      <span className="font-semibold">R$ {ord.amountPaid.toFixed(2)}</span>
-                                    </div>
-                                  )}
-                                  {ord.cashChange != null && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-bold text-[10px] uppercase text-emerald-700 shrink-0">Troco:</span>
-                                      <span className="font-semibold">R$ {ord.cashChange.toFixed(2)}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              {/* Order Notes */}
-                              {ord.notes && (
-                                <div className="bg-rose-50 border border-rose-100 p-2.5 rounded-xl text-xs text-red-800 space-y-0.5">
-                                  <span className="font-bold text-[10px] uppercase text-red-600 block">Observação:</span>
-                                  <p className="italic leading-relaxed">{ord.notes}</p>
-                                </div>
-                              )}
-
-                              {/* Total and Date info */}
-                              <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-                                <span className="text-slate-400 text-xs font-medium">
-                                  {new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </span>
-                                <span className="font-extrabold text-slate-900 text-sm">
-                                  Total: R$ {ord.totalPrice.toFixed(2)}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Card Footer controls */}
-                            <div className="p-4 bg-slate-50/50 border-t border-slate-100 flex gap-2">
-                              {ord.status === 'Pendente' && (
-                                <button
-                                  onClick={() => handleUpdateStatus(ord.id, 'Em Preparo')}
-                                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 rounded-xl shadow transition-colors"
-                                >
-                                  Começar Preparo
-                                </button>
-                              )}
-                              {ord.status === 'Em Preparo' && (
-                                <button
-                                  onClick={() => handleUpdateStatus(ord.id, 'Pronto')}
-                                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2 rounded-xl shadow transition-colors animate-pulse"
-                                >
-                                  Pronto (Chamar Cliente)
-                                </button>
-                              )}
-                              {ord.status === 'Pronto' && (
-                                <button
-                                  onClick={() => handleUpdateStatus(ord.id, 'Entregue')}
-                                  className="flex-1 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 rounded-xl shadow transition-colors"
-                                >
-                                  Marcar Entregue
-                                </button>
-                              )}
-                              {ord.status === 'Entregue' && (
-                                <>
-                                  <div className="flex-1 bg-slate-100 text-slate-500 font-bold text-xs py-2 rounded-xl text-center border border-slate-200">
-                                    ✓ Finalizado
-                                  </div>
-                                  {isAdmin && (
+                              {/* Card Footer controls */}
+                              <div className="p-4 bg-slate-50/50 border-t border-slate-100 flex gap-2">
+                                {ord.status === 'Pendente' && (
+                                  <button
+                                    onClick={() => handleUpdateStatus(ord.id, 'Em Preparo')}
+                                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors cursor-pointer"
+                                  >
+                                    Começar Preparo
+                                  </button>
+                                )}
+                                {ord.status === 'Em Preparo' && (
+                                  isDelivery ? (
                                     <button
-                                      onClick={() => handleArchiveOrder(ord.id)}
-                                      className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 rounded-xl shadow transition-colors"
+                                      onClick={() => handleUpdateStatus(ord.id, 'Saiu para Entrega')}
+                                      className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors animate-pulse flex items-center justify-center gap-1 cursor-pointer"
                                     >
-                                      Arquivar
+                                      <Bike className="w-3.5 h-3.5" />
+                                      Saiu para Entrega
                                     </button>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          </motion.div>
-                        ))
+                                  ) : (
+                                    <button
+                                      onClick={() => handleUpdateStatus(ord.id, 'Pronto')}
+                                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors animate-pulse cursor-pointer"
+                                    >
+                                      Pronto (Chamar Cliente)
+                                    </button>
+                                  )
+                                )}
+                                {ord.status === 'Saiu para Entrega' && (
+                                  <button
+                                    onClick={() => {
+                                      if (ord.deliveryPin) {
+                                        const inputPin = window.prompt(`🔒 Confirmação de Entrega:\nPor favor, digite o PIN de 4 dígitos informado pelo cliente ou entregador:`);
+                                        if (inputPin === null) return;
+                                        if (inputPin.trim() === ord.deliveryPin.trim()) {
+                                          handleUpdateStatus(ord.id, 'Entregue');
+                                          showToast(`✅ PIN de entrega (${ord.deliveryPin}) verificado com sucesso!`, 'success');
+                                        } else {
+                                          showToast('❌ PIN incorreto! Verifique o código com o cliente/entregador.', 'alert');
+                                        }
+                                      } else {
+                                        handleUpdateStatus(ord.id, 'Entregue');
+                                      }
+                                    }}
+                                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                  >
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                    Validar PIN & Finalizar
+                                  </button>
+                                )}
+                                {ord.status === 'Pronto' && (
+                                  <button
+                                    onClick={() => handleUpdateStatus(ord.id, 'Entregue')}
+                                    className="flex-1 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors cursor-pointer"
+                                  >
+                                    Marcar Entregue
+                                  </button>
+                                )}
+                                {ord.status === 'Entregue' && (
+                                  <>
+                                    <div className="flex-1 bg-slate-100 text-slate-500 font-bold text-xs py-2.5 rounded-xl text-center border border-slate-200">
+                                      ✓ Finalizado
+                                    </div>
+                                    {isAdmin && (
+                                      <button
+                                        onClick={() => handleArchiveOrder(ord.id)}
+                                        className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2.5 rounded-xl shadow transition-colors cursor-pointer"
+                                      >
+                                        Arquivar
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </motion.div>
+                          );
+                        })
                       )}
                     </div>
                   </div>

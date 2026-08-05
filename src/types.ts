@@ -12,7 +12,19 @@ export interface Product {
   image: string;
 }
 
-export type OrderStatus = 'Pendente' | 'Em Preparo' | 'Pronto' | 'Entregue';
+export type OrderStatus = 'Pendente' | 'Em Preparo' | 'Pronto' | 'Saiu para Entrega' | 'Entregue';
+
+export type OrderType = 'mesa' | 'balcao' | 'delivery';
+
+export interface DeliveryAddress {
+  street: string;
+  number: string;
+  neighborhood: string;
+  complement?: string;
+  reference: string;
+  deliveryInstructions?: string;
+  phone: string;
+}
 
 export interface OrderItem {
   product: Product;
@@ -22,8 +34,14 @@ export interface OrderItem {
 export interface Order {
   id: string;
   code: string; // Ex: #1001
-  table: string; // Mesa do cliente
+  table: string; // Mesa do cliente ou 'Balcão' / 'Delivery'
   customerName: string;
+  orderType?: OrderType;
+  customerPhone?: string;
+  deliveryAddress?: DeliveryAddress;
+  deliveryFee?: number;
+  deliveryPin?: string;
+  deliveryPhotoUrl?: string;
   items: OrderItem[];
   status: OrderStatus;
   totalPrice: number;
