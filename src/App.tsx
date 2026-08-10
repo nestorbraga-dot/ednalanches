@@ -879,49 +879,54 @@ export default function App() {
         status: 'Pendente' as const
       };
 
-      const orderPayloadWithPayment = {
-        ...baseOrderPayload,
-        valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
-        troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null,
-        tipo_pedido: orderType,
-        cliente_telefone: orderType === 'delivery' ? deliveryPhone.trim() : null,
-        endereco_entrega: deliveryAddressObj ? JSON.stringify(deliveryAddressObj) : null,
-        taxa_entrega: orderType === 'delivery' ? deliveryFee : 0,
-        pin_entrega: orderType === 'delivery' ? pin : null
-      };
+      let newOrder: any = null;
+      let insertSuccess = false;
 
-      let newOrder;
-      let errPedido;
-
+      // --- Tentativa 1: payload completo (com colunas extras de delivery) ---
       try {
-        const response = await supabase
-          .from('pedidos')
-          .insert([orderPayloadWithPayment])
-          .select()
-          .single();
-        newOrder = response.data;
-        errPedido = response.error;
-      } catch (e) {
-        errPedido = e as any;
-      }
-
-      if (errPedido) {
-        // Fallback to inserting with base schema if extra columns aren't present
-        const fallbackPayload = {
+        const fullPayload = {
           ...baseOrderPayload,
           valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
-          troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null
+          troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null,
+          tipo_pedido: orderType,
+          cliente_telefone: orderType === 'delivery' ? deliveryPhone.trim() : null,
+          endereco_entrega: deliveryAddressObj ? JSON.stringify(deliveryAddressObj) : null,
+          taxa_entrega: orderType === 'delivery' ? deliveryFee : 0,
+          pin_entrega: orderType === 'delivery' ? pin : null
         };
-        const fallbackResponse = await supabase
-          .from('pedidos')
-          .insert([fallbackPayload])
-          .select()
-          .single();
-        newOrder = fallbackResponse.data;
-        errPedido = fallbackResponse.error;
+        const r1 = await supabase.from('pedidos').insert([fullPayload]).select().single();
+        if (!r1.error) { newOrder = r1.data; insertSuccess = true; }
+        else { console.warn('[pedidos] Tentativa 1 falhou:', r1.error.message); }
+      } catch (e: any) { console.warn('[pedidos] Tentativa 1 excecao:', e?.message); }
+
+      // --- Tentativa 2: base + valor_pago/troco (sem colunas de delivery) ---
+      if (!insertSuccess) {
+        try {
+          const midPayload = {
+            ...baseOrderPayload,
+            valor_pago: paymentMethod === 'Dinheiro' ? Number(amountPaid || 0) : null,
+            troco: paymentMethod === 'Dinheiro' ? (getCashChange() ?? 0) : null
+          };
+          const r2 = await supabase.from('pedidos').insert([midPayload]).select().single();
+          if (!r2.error) { newOrder = r2.data; insertSuccess = true; }
+          else { console.warn('[pedidos] Tentativa 2 falhou:', r2.error.message); }
+        } catch (e: any) { console.warn('[pedidos] Tentativa 2 excecao:', e?.message); }
       }
 
-      if (errPedido) throw errPedido;
+      // --- Tentativa 3: mínimo absoluto (colunas garantidas do schema original) ---
+      if (!insertSuccess) {
+        try {
+          const r3 = await supabase.from('pedidos').insert([baseOrderPayload]).select().single();
+          if (!r3.error) { newOrder = r3.data; insertSuccess = true; }
+          else { console.warn('[pedidos] Tentativa 3 falhou:', r3.error.message); throw r3.error; }
+        } catch (e: any) {
+          console.error('[pedidos] Todas as tentativas falharam:', e?.message);
+          throw e;
+        }
+      }
+
+      if (!newOrder) throw new Error('Não foi possível criar o pedido no banco de dados.');
+
 
       // 5. Insert order items
       const itensParaInserir = cart.map(item => ({
