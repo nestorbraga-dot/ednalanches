@@ -770,28 +770,29 @@ export default function App() {
 
     setSubmittingOrder(true);
 
-    // Upload optional delivery location photo to Supabase Storage
-    let uploadedPhotoUrl: string | null = null;
-    if (orderType === 'delivery' && deliveryPhotoFile) {
-      try {
-        const fileExt = deliveryPhotoFile.name.split('.').pop();
-        const fileName = `delivery_${Date.now()}.${fileExt}`;
-        const { data: uploadData, error: uploadErr } = await supabase.storage
-          .from('delivery-photos')
-          .upload(fileName, deliveryPhotoFile, { upsert: false, contentType: deliveryPhotoFile.type });
-        if (uploadErr) {
-          console.warn('Foto não enviada (opcional):', uploadErr.message);
-        } else if (uploadData) {
-          const { data: publicUrlData } = supabase.storage
-            .from('delivery-photos')
-            .getPublicUrl(uploadData.path);
-          uploadedPhotoUrl = publicUrlData.publicUrl;
-        }
-      } catch (e) {
-        console.warn('Erro ao fazer upload da foto (não crítico):', e);
-      }
-    }
     try {
+      // Upload optional delivery location photo to Supabase Storage (non-blocking)
+      let uploadedPhotoUrl: string | null = null;
+      if (orderType === 'delivery' && deliveryPhotoFile) {
+        try {
+          const fileExt = deliveryPhotoFile.name.split('.').pop();
+          const fileName = `delivery_${Date.now()}.${fileExt}`;
+          const { data: uploadData, error: uploadErr } = await supabase.storage
+            .from('delivery-photos')
+            .upload(fileName, deliveryPhotoFile, { upsert: false, contentType: deliveryPhotoFile.type });
+          if (uploadErr) {
+            console.warn('Foto não enviada (opcional):', uploadErr.message);
+          } else if (uploadData) {
+            const { data: publicUrlData } = supabase.storage
+              .from('delivery-photos')
+              .getPublicUrl(uploadData.path);
+            uploadedPhotoUrl = publicUrlData.publicUrl;
+          }
+        } catch (photoErr) {
+          console.warn('Erro ao fazer upload da foto (não crítico):', photoErr);
+        }
+      }
+
       let savedClientName = localStorage.getItem('edna_client_name') || '';
       let savedClientTable = localStorage.getItem('edna_client_table') || 'Mesa';
 
@@ -820,6 +821,7 @@ export default function App() {
       if (configErr) throw configErr;
       if (config && !config.aberta) {
         showToast('A Edna Lanches está fechada no momento para novos pedidos.', 'alert');
+        setSubmittingOrder(false);
         return;
       }
 
@@ -830,6 +832,7 @@ export default function App() {
         const paid = Number(amountPaid);
         if (!Number.isFinite(paid) || paid < total) {
           showToast(`Informe um valor em dinheiro maior ou igual ao total de R$ ${total.toFixed(2)}.`, 'alert');
+          setSubmittingOrder(false);
           return;
         }
       }
