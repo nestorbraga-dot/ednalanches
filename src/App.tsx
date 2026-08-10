@@ -145,6 +145,9 @@ export default function App() {
   const [deliveryComplement, setDeliveryComplement] = useState(() => localStorage.getItem('edna_delivery_complement') || '');
   const [deliveryReference, setDeliveryReference] = useState(() => localStorage.getItem('edna_delivery_reference') || '');
   const [deliveryInstructions, setDeliveryInstructions] = useState<string>('Tocar campainha');
+  const [deliveryPhotoFile, setDeliveryPhotoFile] = useState<File | null>(null);
+  const [deliveryPhotoPreview, setDeliveryPhotoPreview] = useState<string | null>(null);
+  const [deliveryPhotoUrl, setDeliveryPhotoUrl] = useState<string | null>(null);
   const deliveryFee = 5.00;
 
   // New product form states
@@ -766,6 +769,28 @@ export default function App() {
     }
 
     setSubmittingOrder(true);
+
+    // Upload optional delivery location photo to Supabase Storage
+    let uploadedPhotoUrl: string | null = null;
+    if (orderType === 'delivery' && deliveryPhotoFile) {
+      try {
+        const fileExt = deliveryPhotoFile.name.split('.').pop();
+        const fileName = `delivery_${Date.now()}.${fileExt}`;
+        const { data: uploadData, error: uploadErr } = await supabase.storage
+          .from('delivery-photos')
+          .upload(fileName, deliveryPhotoFile, { upsert: false, contentType: deliveryPhotoFile.type });
+        if (uploadErr) {
+          console.warn('Foto não enviada (opcional):', uploadErr.message);
+        } else if (uploadData) {
+          const { data: publicUrlData } = supabase.storage
+            .from('delivery-photos')
+            .getPublicUrl(uploadData.path);
+          uploadedPhotoUrl = publicUrlData.publicUrl;
+        }
+      } catch (e) {
+        console.warn('Erro ao fazer upload da foto (não crítico):', e);
+      }
+    }
     try {
       let savedClientName = localStorage.getItem('edna_client_name') || '';
       let savedClientTable = localStorage.getItem('edna_client_table') || 'Mesa';
@@ -830,13 +855,14 @@ export default function App() {
         complement: deliveryComplement.trim() || undefined,
         reference: deliveryReference.trim(),
         deliveryInstructions: deliveryInstructions || 'Tocar campainha',
-        phone: deliveryPhone.trim()
+        phone: deliveryPhone.trim(),
+        locationPhotoUrl: uploadedPhotoUrl || undefined
       } : undefined;
 
       const mesaValue = orderType === 'delivery' ? 'Delivery' : (orderType === 'balcao' ? 'Balcão' : savedClientTable);
 
       const deliveryFormattedNotes = orderType === 'delivery'
-        ? `[🛵 DELIVERY] Tel: ${deliveryPhone.trim()} | Endereço: ${deliveryStreet.trim()}, ${deliveryNumber.trim()} - ${deliveryNeighborhood.trim()}${deliveryComplement ? ' (' + deliveryComplement.trim() + ')' : ''} | Ref: ${deliveryReference.trim()} | Inst: ${deliveryInstructions} | PIN: ${pin}${orderNotes ? ' | Obs: ' + orderNotes : ''}`
+        ? `[🛵 DELIVERY] Tel: ${deliveryPhone.trim()} | Endereço: ${deliveryStreet.trim()}, ${deliveryNumber.trim()} - ${deliveryNeighborhood.trim()}${deliveryComplement ? ' (' + deliveryComplement.trim() + ')' : ''} | Ref: ${deliveryReference.trim()} | Inst: ${deliveryInstructions} | PIN: ${pin}${uploadedPhotoUrl ? ' | Foto: ' + uploadedPhotoUrl : ''}${orderNotes ? ' | Obs: ' + orderNotes : ''}`
         : (orderNotes || '');
 
       // 4. Insert order header
@@ -911,6 +937,9 @@ export default function App() {
       setOrderNotes('');
       setPaymentMethod('');
       setAmountPaid('');
+      setDeliveryPhotoFile(null);
+      setDeliveryPhotoPreview(null);
+      setDeliveryPhotoUrl(null);
       showToast('🎉 Pedido enviado para a cozinha da Edna!', 'success');
     } catch (e) {
       console.error('Error submitting order:', e);
@@ -1921,6 +1950,58 @@ export default function App() {
                               ))}
                             </div>
                           </div>
+
+                          {/* Optional Location Photo Upload */}
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] uppercase font-bold text-slate-600 block flex items-center gap-1.5">
+                              <span>📷 Foto do Local</span>
+                              <span className="text-[9px] text-slate-400 font-normal italic lowercase">(opcional — ajuda o motoboy a encontrar)</span>
+                            </label>
+                            {deliveryPhotoPreview ? (
+                              <div className="relative">
+                                <img
+                                  src={deliveryPhotoPreview}
+                                  alt="Prévia da foto do local"
+                                  className="w-full h-32 object-cover rounded-xl border border-rose-200 shadow-sm"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => { setDeliveryPhotoFile(null); setDeliveryPhotoPreview(null); }}
+                                  className="absolute top-1.5 right-1.5 bg-white/90 hover:bg-white border border-slate-200 text-slate-700 rounded-full p-1 shadow transition-all cursor-pointer"
+                                  title="Remover foto"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                                <span className="absolute bottom-1.5 left-1.5 bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow">
+                                  ✓ Foto selecionada
+                                </span>
+                              </div>
+                            ) : (
+                              <label
+                                htmlFor="delivery-photo-upload"
+                                className="flex flex-col items-center justify-center gap-2 w-full h-24 border-2 border-dashed border-rose-200 rounded-xl bg-white hover:bg-rose-50/50 cursor-pointer transition-all"
+                              >
+                                <span className="text-2xl">📷</span>
+                                <span className="text-[11px] text-slate-500 font-medium">Toque para tirar ou escolher foto</span>
+                                <input
+                                  id="delivery-photo-upload"
+                                  type="file"
+                                  accept="image/*"
+                                  capture="environment"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      setDeliveryPhotoFile(file);
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => setDeliveryPhotoPreview(reader.result as string);
+                                      reader.readAsDataURL(file);
+                                    }
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </div>
                         </motion.div>
                       )}
 
@@ -2567,6 +2648,21 @@ export default function App() {
                                         <Navigation className="w-3 h-3 text-blue-500" />
                                         Abrir Rota no Google Maps <ExternalLink className="w-2.5 h-2.5" />
                                       </a>
+                                    )}
+
+                                    {/* Location Photo from client */}
+                                    {del?.locationPhotoUrl && (
+                                      <div className="pt-2 space-y-1">
+                                        <span className="text-[10px] uppercase font-bold text-rose-800 block">📷 Foto do Local:</span>
+                                        <a href={del.locationPhotoUrl} target="_blank" rel="noopener noreferrer">
+                                          <img
+                                            src={del.locationPhotoUrl}
+                                            alt="Foto do local de entrega"
+                                            className="w-full h-28 object-cover rounded-lg border border-rose-200 shadow-sm hover:opacity-90 transition-opacity cursor-pointer"
+                                          />
+                                        </a>
+                                        <p className="text-[9px] text-slate-400 italic">Clique para ampliar a foto</p>
+                                      </div>
                                     )}
 
                                     {ord.deliveryPin && (

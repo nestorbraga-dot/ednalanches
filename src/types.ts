@@ -24,6 +24,7 @@ export interface DeliveryAddress {
   reference: string;
   deliveryInstructions?: string;
   phone: string;
+  locationPhotoUrl?: string;
 }
 
 export interface OrderItem {
