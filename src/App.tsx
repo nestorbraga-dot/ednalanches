@@ -193,6 +193,45 @@ export default function App() {
   // Order status filter in admin panel
   const [adminFilter, setAdminFilter] = useState<'Todos' | 'Pendente' | 'Em Preparo' | 'Pronto' | 'Saiu para Entrega' | 'Entregue'>('Todos');
 
+  // ---- Local Order History (localStorage) ----
+  const [orderHistory, setOrderHistory] = useState<Order[]>(() => {
+    try {
+      const saved = localStorage.getItem('edna_order_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Persist history on change
+  useEffect(() => {
+    localStorage.setItem('edna_order_history', JSON.stringify(orderHistory));
+  }, [orderHistory]);
+
+  // Auto-save delivered orders to history
+  useEffect(() => {
+    const deliveredOrClientName = (o: Order) =>
+      (o.customerName === clientName && o.table === clientTable) ||
+      o.orderType === 'delivery';
+    const delivered = orders.filter(
+      (o) => o.status === 'Entregue' && deliveredOrClientName(o)
+    );
+    if (delivered.length === 0) return;
+    setOrderHistory((prev) => {
+      const existingIds = new Set(prev.map((h) => h.id));
+      const newEntries = delivered.filter((o) => !existingIds.has(o.id));
+      if (newEntries.length === 0) return prev;
+      return [...newEntries, ...prev];
+    });
+  }, [orders, clientName, clientTable]);
+
+  const removeFromHistory = (id: string) => {
+    setOrderHistory((prev) => prev.filter((o) => o.id !== id));
+  };
+
+  const clearAllHistory = () => {
+    setOrderHistory([]);
+  };
+
   // Toast helper
   const showToast = (message: string, type: 'success' | 'info' | 'alert' = 'success') => {
     const id = Date.now().toString();
@@ -2362,6 +2401,103 @@ export default function App() {
                           ) : null}
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ---- Order History Section ---- */}
+                <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowHistory((v) => !v)}
+                    className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-50 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">🗂️</span>
+                      <div>
+                        <h3 className="font-extrabold text-slate-900 text-sm">Histórico de Pedidos</h3>
+                        <p className="text-[10px] text-slate-400 font-medium">
+                          {orderHistory.length} {orderHistory.length === 1 ? 'pedido salvo' : 'pedidos salvos'} localmente
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {orderHistory.length > 0 && (
+                        <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2.5 py-1 rounded-full">
+                          {orderHistory.length}
+                        </span>
+                      )}
+                      <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${showHistory ? 'rotate-90' : ''}`} />
+                    </div>
+                  </button>
+
+                  {showHistory && (
+                    <div className="px-5 pb-5 space-y-3 border-t border-slate-100 pt-4">
+                      {orderHistory.length === 0 ? (
+                        <div className="py-10 text-center flex flex-col items-center gap-3 text-slate-400">
+                          <span className="text-4xl">📭</span>
+                          <p className="text-xs font-medium">Nenhum pedido no histórico ainda.<br />Os pedidos entregues aparecem aqui automaticamente.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={clearAllHistory}
+                              className="text-[10px] text-red-500 hover:text-red-700 font-bold px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 transition-all border border-red-200 cursor-pointer flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" /> Limpar tudo
+                            </button>
+                          </div>
+                          <div className="space-y-3">
+                            {orderHistory.map((ord) => (
+                              <div key={ord.id} className="bg-slate-50 border border-slate-100 p-4 rounded-2xl space-y-2">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="space-y-0.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-extrabold text-sm text-slate-800">{ord.code}</span>
+                                      {ord.orderType === 'delivery' ? (
+                                        <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">🛵 Delivery</span>
+                                      ) : (
+                                        <span className="bg-slate-200 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-full">Mesa {ord.table}</span>
+                                      )}
+                                      <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full">✅ Entregue</span>
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 font-mono">
+                                      {new Date(ord.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeFromHistory(ord.id)}
+                                    title="Remover do histórico"
+                                    className="text-slate-300 hover:text-red-500 transition-colors p-1 rounded-full hover:bg-red-50 cursor-pointer shrink-0"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
+
+                                <div className="text-xs text-slate-600 space-y-1">
+                                  <div className="text-[10px] text-slate-400 uppercase font-extrabold tracking-wider">Itens:</div>
+                                  <div>{ord.items.map(i => `${i.quantity}x ${i.product.name}`).join(', ')}</div>
+                                  <div className="font-extrabold text-slate-800 pt-0.5">
+                                    Total: R$ {ord.totalPrice.toFixed(2)}
+                                    {ord.paymentMethod && (
+                                      <span className="ml-2 font-normal text-slate-500">({ord.paymentMethod})</span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {ord.orderType === 'delivery' && ord.deliveryAddress && (
+                                  <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-100 p-2 rounded-xl">
+                                    <strong>📍</strong> {(ord.deliveryAddress as any).street}, {(ord.deliveryAddress as any).number} — {(ord.deliveryAddress as any).neighborhood}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
