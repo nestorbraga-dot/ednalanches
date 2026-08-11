@@ -310,6 +310,22 @@ export default function App() {
     }
   };
 
+  // Delete a single order from Admin panel
+  const handleDeleteOrderAdmin = async (orderId: string) => {
+    if (!window.confirm('Tem certeza que deseja apagar este pedido do banco de dados?')) return;
+    setOrders(prev => prev.filter(o => o.id !== orderId));
+    try {
+      await supabase.from('pedido_itens').delete().eq('pedido_id', orderId);
+      const { error } = await supabase.from('pedidos').delete().eq('id', orderId);
+      if (error) throw error;
+      showToast('Pedido apagado com sucesso!', 'success');
+    } catch (e: any) {
+      console.error('Error deleting order:', e);
+      showToast('Falha ao apagar pedido: ' + e.message, 'alert');
+      fetchOrders();
+    }
+  };
+
   // Delete all archived orders (admin)
   const handleClearArchived = async () => {
     if (archivedOrderIds.length === 0) {
@@ -1298,9 +1314,12 @@ export default function App() {
     return adminFilter === 'Todos' || o.status === adminFilter;
   });
 
-  // Active client orders
+  // Active client orders (excluding Entregue)
   const clientActiveOrders = orders.filter(
-    (o) => o.customerName === clientName && o.table === clientTable
+    (o) => o.status !== 'Entregue' && (
+      (o.customerName === clientName && o.table === clientTable) ||
+      (o.orderType === 'delivery' && deliveryPhone && (o.customerPhone === deliveryPhone || o.deliveryAddress?.phone === deliveryPhone))
+    )
   );
 
   return (
@@ -2731,10 +2750,20 @@ export default function App() {
                                     <span>{ord.customerName}</span>
                                   </h4>
                                 </div>
-                                <div className={`font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1 shadow-inner ${
-                                  isDelivery ? 'bg-rose-600 text-white' : ord.table === 'Balcão' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'
-                                }`}>
-                                  {isDelivery ? '🛵 Delivery' : ord.table === 'Balcão' ? '🛍️ Balcão' : `Mesa ${ord.table}`}
+                                <div className="flex items-center gap-1.5">
+                                  <div className={`font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1 shadow-inner ${
+                                    isDelivery ? 'bg-rose-600 text-white' : ord.table === 'Balcão' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-white'
+                                  }`}>
+                                    {isDelivery ? '🛵 Delivery' : ord.table === 'Balcão' ? '🛍️ Balcão' : `Mesa ${ord.table}`}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteOrderAdmin(ord.id)}
+                                    title="Apagar este pedido permanentemente"
+                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
                                 </div>
                               </div>
 
